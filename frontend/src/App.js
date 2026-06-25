@@ -1,54 +1,45 @@
-import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { AuthProvider } from "@/context/AuthContext";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+import LoginPage from "@/pages/LoginPage";
+import LineAreaPage from "@/pages/LineAreaPage";
+import DashboardLinePage from "@/pages/DashboardLinePage";
+import SparePartDatabasePage from "@/pages/SparePartDatabasePage";
+import SparePartDetailPage from "@/pages/SparePartDetailPage";
+import SparePartFormPage from "@/pages/SparePartFormPage";
+import UserManagementPage from "@/pages/UserManagementPage";
+import MonthlyReportPage from "@/pages/MonthlyReportPage";
+import SettingsPage from "@/pages/SettingsPage";
+import OverviewDashboardPage from "@/pages/OverviewDashboardPage";
 
 function App() {
   return (
     <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <Toaster position="top-right" richColors closeButton />
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/" element={<Navigate to="/area" replace />} />
+
+            <Route path="/dashboard" element={<ProtectedRoute><OverviewDashboardPage /></ProtectedRoute>} />
+            <Route path="/area" element={<ProtectedRoute><LineAreaPage /></ProtectedRoute>} />
+            <Route path="/line/:slug" element={<ProtectedRoute><DashboardLinePage /></ProtectedRoute>} />
+            <Route path="/database" element={<ProtectedRoute><SparePartDatabasePage /></ProtectedRoute>} />
+            <Route path="/parts/new" element={<ProtectedRoute><SparePartFormPage /></ProtectedRoute>} />
+            <Route path="/parts/:id" element={<ProtectedRoute><SparePartDetailPage /></ProtectedRoute>} />
+            <Route path="/users" element={<ProtectedRoute><UserManagementPage /></ProtectedRoute>} />
+            <Route path="/reports" element={<ProtectedRoute><MonthlyReportPage /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+
+            <Route path="*" element={<Navigate to="/area" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
     </div>
   );
 }

@@ -1,72 +1,690 @@
-from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+import os
+import uuid
+import logging
+import bcrypt
+import jwt
+import requests
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Literal, Dict, Any
+
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Query, Response, Header
+from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, ConfigDict
+
+# -------------------------------------------------------------------
+# Setup & Constants
+# -------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
-app = FastAPI()
+JWT_SECRET = os.environ['JWT_SECRET']
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = 12
 
-# Create a router with the /api prefix
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+APP_NAME = os.environ.get('APP_NAME', 'spare-part-control')
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+DEFAULT_PASSWORD = os.environ.get('DEFAULT_PASSWORD', '123456')
+CREATOR_NIK = os.environ.get('CREATOR_NIK', '32521')
+
+LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLING", "FINAL INSPECTION"]
+RANK_OPTIONS = ["SEC.HEAD", "SUPERVISOR", "SENIOR FOREMAN", "FOREMAN", "PELAKSANA"]
+
+INITIAL_USERS = [
+    {"name": "ZULKIFLI", "email": "zulkifli@suzuki.co.id", "nik": "6282", "rank": "SEC.HEAD", "area": "TC BODY"},
+    {"name": "HERI IRAWAN", "email": "heri.irawan@suzuki.co.id", "nik": "19376", "rank": "SUPERVISOR", "area": "TC BODY"},
+    {"name": "EKA AGUS ERAWILUTA", "email": "eka.agus@suzuki.co.id", "nik": "18195", "rank": "SUPERVISOR", "area": "TC BODY"},
+    {"name": "DIDIK LUKITO", "email": "didik.lukito@suzuki.co.id", "nik": "8899", "rank": "SUPERVISOR", "area": "PRESSING & WELDING"},
+    {"name": "HARWANTO TRI PITOYO", "email": "Harwanto.Pitoyo@suzuki.co.id", "nik": "6737", "rank": "SENIOR FOREMAN", "area": "ASSEMBLING, FI & SEAT"},
+    {"name": "AHMAD ROHMAN", "email": "ahmad.Rohman@suzuki.co.id", "nik": "6118", "rank": "SUPERVISOR", "area": "ADMIN TC BODY"},
+    {"name": "AFIF NAUFAL FAUZAN", "email": "afif.fauzan@suzuki.co.id", "nik": "28403", "rank": "FOREMAN", "area": "PAINTING & INJECTION"},
+    {"name": "ZAQI AZKA ARMANDA M.", "email": "zaqi.azka@suzuki.co.id", "nik": "30771", "rank": "FOREMAN", "area": "PAINTING"},
+    {"name": "HERI DARWANTO", "email": "heri.darwanto@suzuki.co.id", "nik": "8803", "rank": "FOREMAN", "area": "SEAT"},
+    {"name": "BUDI YUNANTO", "email": "budi.yunanto@suzuki.co.id", "nik": "6429", "rank": "FOREMAN", "area": "INJECTION"},
+    {"name": "AFIQ RAKA PRADIPTA", "email": "afiq.raka@suzuki.co.id", "nik": "32523", "rank": "PELAKSANA", "area": "PRESSING"},
+    {"name": "BAGAS NUR SUSANTO", "email": "bagas.susanto@suzuki.co.id", "nik": "32511", "rank": "PELAKSANA", "area": "WELDING"},
+    {"name": "CINDY MELIANA SARI GUNAWAN", "email": "cindy.meliana@suzuki.co.id", "nik": "32521", "rank": "PELAKSANA", "area": "ASSEMBLING & FI"},
+    {"name": "FAHREZA ALDRYAN MAULANA", "email": "fahreza.aldryan@suzuki.co.id", "nik": "32522", "rank": "PELAKSANA", "area": "INJECTION"},
+    {"name": "SUGIYANTO", "email": "sugiyanto@suzuki.co.id", "nik": "19561", "rank": "PELAKSANA", "area": "ADMIN TC BODY"},
+]
+
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+def create_access_token(user_id: str, nik: str, role: str) -> str:
+    payload = {
+        "sub": user_id, "nik": nik, "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
+        "type": "access",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def strip_user(u: dict) -> dict:
+    if not u: return u
+    u = dict(u)
+    u.pop("_id", None)
+    u.pop("password_hash", None)
+    return u
+
+def compute_status(part: dict) -> str:
+    if part.get("datang_date") and part.get("datang_no"):
+        return "DATANG"
+    if part.get("po_date") and part.get("po_no"):
+        return "PO PROCESS"
+    if part.get("afa_date") and part.get("afa_no"):
+        return "AFA PROCESS"
+    if part.get("nego_date"):
+        return "NEGO"
+    if part.get("penawaran_date"):
+        return "PENAWARAN"
+    return "REQUEST"
+
+def part_with_status(part: dict) -> dict:
+    if not part: return part
+    part = dict(part)
+    part.pop("_id", None)
+    part["status"] = compute_status(part)
+    return part
+
+# -------------------------------------------------------------------
+# Storage (Emergent Managed Object Storage)
+# -------------------------------------------------------------------
+storage_key: Optional[str] = None
+
+def init_storage() -> Optional[str]:
+    global storage_key
+    if storage_key:
+        return storage_key
+    if not EMERGENT_LLM_KEY:
+        logger.warning("EMERGENT_LLM_KEY not set, storage disabled")
+        return None
+    try:
+        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        logger.info("Storage initialized successfully")
+        return storage_key
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
+        return None
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    if resp.status_code == 403:
+        # refresh
+        global storage_key
+        storage_key = None
+        key = init_storage()
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    resp = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key}, timeout=60,
+    )
+    if resp.status_code == 403:
+        global storage_key
+        storage_key = None
+        key = init_storage()
+        resp = requests.get(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key}, timeout=60,
+        )
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="File not found")
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+MIME_BY_EXT = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "pdf": "application/pdf",
+}
+
+# -------------------------------------------------------------------
+# Models
+# -------------------------------------------------------------------
+class LoginRequest(BaseModel):
+    nik: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+class UserCreate(BaseModel):
+    name: str
+    email: str
+    nik: str
+    rank: str
+    area: str
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    nik: Optional[str] = None
+    rank: Optional[str] = None
+    area: Optional[str] = None
+
+class FileRef(BaseModel):
+    id: str
+    path: str
+    filename: str
+    content_type: str
+
+class SparePartCreate(BaseModel):
+    line_area: str
+    nama_barang: str
+    type: Optional[str] = ""
+    maker: str
+    part_mesin: Optional[str] = ""
+    qty_order: int = 1
+    order_tanggal: str  # ISO date string YYYY-MM-DD
+    keterangan: Optional[str] = ""
+    lampiran: List[FileRef] = []
+    foto_part: List[FileRef] = []
+    drawing: List[FileRef] = []
+    spesifikasi: List[FileRef] = []
+    ttd_requestor: Optional[FileRef] = None
+    ttd_approval: Optional[FileRef] = None
+
+class PenawaranUpdate(BaseModel):
+    penawaran_date: Optional[str] = None
+    penawaran_note: Optional[str] = ""
+    nego_date: Optional[str] = None
+    nego_note: Optional[str] = ""
+
+class AFAUpdate(BaseModel):
+    afa_date: Optional[str] = None
+    afa_no: Optional[str] = ""
+    afa_note: Optional[str] = ""
+
+class POUpdate(BaseModel):
+    po_date: Optional[str] = None
+    po_no: Optional[str] = ""
+    po_note: Optional[str] = ""
+
+class DatangUpdate(BaseModel):
+    datang_date: Optional[str] = None
+    datang_no: Optional[str] = ""
+    datang_note: Optional[str] = ""
+    foto_datang: List[FileRef] = []
+
+class StampUpdate(BaseModel):
+    stamp_file: Optional[FileRef] = None
+
+# -------------------------------------------------------------------
+# FastAPI App & Auth
+# -------------------------------------------------------------------
+app = FastAPI(title="Spare Part Control System")
 api_router = APIRouter(prefix="/api")
 
+async def get_current_user(request: Request) -> dict:
+    token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user = await db.users.find_one({"id": payload["sub"]})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return strip_user(user)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+def require_creator(user: dict):
+    if user.get("role") != "creator":
+        raise HTTPException(status_code=403, detail="Only Creator can perform this action")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+# -------------------------------------------------------------------
+# Startup
+# -------------------------------------------------------------------
+@app.on_event("startup")
+async def startup():
+    # Indexes
+    await db.users.create_index("nik", unique=True)
+    await db.users.create_index("email")
+    await db.spare_parts.create_index("line_area")
+    await db.spare_parts.create_index("order_tanggal")
+    await db.files.create_index("path", unique=True)
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+    # Init storage
+    init_storage()
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+    # Seed users
+    existing = await db.users.count_documents({})
+    if existing == 0:
+        for u in INITIAL_USERS:
+            role = "creator" if u["nik"] == CREATOR_NIK else "user"
+            doc = {
+                "id": str(uuid.uuid4()),
+                "name": u["name"],
+                "email": u["email"],
+                "nik": u["nik"],
+                "rank": u["rank"],
+                "area": u["area"],
+                "role": role,
+                "password_hash": hash_password(DEFAULT_PASSWORD),
+                "must_change_password": False,
+                "created_at": now_iso(),
+            }
+            await db.users.insert_one(doc)
+        logger.info(f"Seeded {len(INITIAL_USERS)} initial users")
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+# -------------------------------------------------------------------
+# Auth Endpoints
+# -------------------------------------------------------------------
+@api_router.post("/auth/login")
+async def login(payload: LoginRequest):
+    user = await db.users.find_one({"nik": payload.nik})
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="NIK atau password salah")
+    token = create_access_token(user["id"], user["nik"], user["role"])
+    return {"access_token": token, "token_type": "bearer", "user": strip_user(user)}
 
-# Include the router in the main app
+@api_router.get("/auth/me")
+async def me(user=Depends(get_current_user)):
+    return user
+
+@api_router.post("/auth/change-password")
+async def change_password(payload: ChangePasswordRequest, user=Depends(get_current_user)):
+    db_user = await db.users.find_one({"id": user["id"]})
+    if not verify_password(payload.current_password, db_user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Password saat ini salah")
+    if len(payload.new_password) < 4:
+        raise HTTPException(status_code=400, detail="Password baru minimal 4 karakter")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}}
+    )
+    return {"ok": True}
+
+@api_router.post("/auth/logout")
+async def logout():
+    return {"ok": True}
+
+# -------------------------------------------------------------------
+# User Management Endpoints
+# -------------------------------------------------------------------
+@api_router.get("/users")
+async def list_users(user=Depends(get_current_user)):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    users.sort(key=lambda x: x.get("nik", ""))
+    return users
+
+@api_router.post("/users")
+async def create_user(payload: UserCreate, user=Depends(get_current_user)):
+    require_creator(user)
+    existing = await db.users.find_one({"nik": payload.nik})
+    if existing:
+        raise HTTPException(status_code=400, detail="NIK sudah terdaftar")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": payload.name,
+        "email": payload.email,
+        "nik": payload.nik,
+        "rank": payload.rank,
+        "area": payload.area,
+        "role": "user",
+        "password_hash": hash_password(DEFAULT_PASSWORD),
+        "must_change_password": False,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    return strip_user(doc)
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, payload: UserUpdate, user=Depends(get_current_user)):
+    require_creator(user)
+    existing = await db.users.find_one({"id": user_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    update_data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "nik" in update_data and update_data["nik"] != existing["nik"]:
+        other = await db.users.find_one({"nik": update_data["nik"]})
+        if other:
+            raise HTTPException(status_code=400, detail="NIK sudah terdaftar")
+    await db.users.update_one({"id": user_id}, {"$set": update_data})
+    updated = await db.users.find_one({"id": user_id})
+    return strip_user(updated)
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user=Depends(get_current_user)):
+    require_creator(user)
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Tidak bisa menghapus akun sendiri")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    if target.get("role") == "creator":
+        raise HTTPException(status_code=400, detail="Tidak bisa menghapus Creator")
+    await db.users.delete_one({"id": user_id})
+    return {"ok": True}
+
+@api_router.post("/users/{user_id}/reset-password")
+async def reset_user_password(user_id: str, user=Depends(get_current_user)):
+    require_creator(user)
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"password_hash": hash_password(DEFAULT_PASSWORD), "must_change_password": True}}
+    )
+    return {"ok": True, "default_password": DEFAULT_PASSWORD}
+
+# -------------------------------------------------------------------
+# File Upload / Download
+# -------------------------------------------------------------------
+@api_router.post("/files/upload")
+async def upload_file(file: UploadFile = File(...), user=Depends(get_current_user)):
+    filename = file.filename or "upload.bin"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    content_type = file.content_type or MIME_BY_EXT.get(ext, "application/octet-stream")
+    file_id = str(uuid.uuid4())
+    path = f"{APP_NAME}/uploads/{user['id']}/{file_id}.{ext}"
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File terlalu besar (max 10MB)")
+    result = put_object(path, data, content_type)
+    doc = {
+        "id": file_id,
+        "path": result["path"],
+        "filename": filename,
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+        "user_id": user["id"],
+        "is_deleted": False,
+        "created_at": now_iso(),
+    }
+    await db.files.insert_one(doc)
+    return {"id": file_id, "path": result["path"], "filename": filename, "content_type": content_type}
+
+@api_router.get("/files/{file_id}")
+async def get_file(file_id: str, auth: Optional[str] = Query(None), authorization: Optional[str] = Header(None)):
+    # accept token via header or query (img tags can't send headers)
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+    elif auth:
+        token = auth
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    record = await db.files.find_one({"id": file_id, "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    data, ct = get_object(record["path"])
+    return Response(content=data, media_type=record.get("content_type") or ct)
+
+# -------------------------------------------------------------------
+# Spare Parts Endpoints
+# -------------------------------------------------------------------
+@api_router.get("/spare-parts")
+async def list_spare_parts(
+    line: Optional[str] = None,
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 10,
+    user=Depends(get_current_user),
+):
+    query: Dict[str, Any] = {}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    if month and year:
+        m = f"{int(month):02d}"
+        query["order_tanggal"] = {"$regex": f"^{int(year)}-{m}"}
+    elif year:
+        query["order_tanggal"] = {"$regex": f"^{int(year)}-"}
+    if q:
+        query["$or"] = [
+            {"nama_barang": {"$regex": q, "$options": "i"}},
+            {"maker": {"$regex": q, "$options": "i"}},
+            {"part_mesin": {"$regex": q, "$options": "i"}},
+            {"type": {"$regex": q, "$options": "i"}},
+            {"afa_no": {"$regex": q, "$options": "i"}},
+            {"po_no": {"$regex": q, "$options": "i"}},
+            {"datang_no": {"$regex": q, "$options": "i"}},
+        ]
+
+    cursor = db.spare_parts.find(query, {"_id": 0}).sort("order_tanggal", -1)
+    all_items = await cursor.to_list(10000)
+    enriched = [part_with_status(p) for p in all_items]
+    if status and status.upper() != "SEMUA":
+        enriched = [p for p in enriched if p["status"] == status.upper()]
+    total = len(enriched)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = enriched[start:end]
+    return {"items": page_items, "total": total, "page": page, "page_size": page_size}
+
+@api_router.get("/spare-parts/{part_id}")
+async def get_spare_part(part_id: str, user=Depends(get_current_user)):
+    part = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part tidak ditemukan")
+    return part_with_status(part)
+
+@api_router.post("/spare-parts")
+async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_user)):
+    part_id = str(uuid.uuid4())
+    doc = payload.model_dump()
+    doc["line_area"] = doc["line_area"].upper()
+    doc["id"] = part_id
+    doc["requestor_id"] = user["id"]
+    doc["requestor_name"] = user["name"]
+    doc["requestor_nik"] = user["nik"]
+    doc["created_at"] = now_iso()
+    doc["updated_at"] = now_iso()
+    # Init process fields
+    doc["penawaran_date"] = None
+    doc["penawaran_note"] = ""
+    doc["nego_date"] = None
+    doc["nego_note"] = ""
+    doc["afa_date"] = None
+    doc["afa_no"] = ""
+    doc["afa_note"] = ""
+    doc["po_date"] = None
+    doc["po_no"] = ""
+    doc["po_note"] = ""
+    doc["datang_date"] = None
+    doc["datang_no"] = ""
+    doc["datang_note"] = ""
+    doc["foto_datang"] = []
+    doc["stamp_file"] = None
+    # Audit log
+    doc["history"] = [{
+        "stage": "REQUEST",
+        "date": doc["order_tanggal"],
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "timestamp": now_iso(),
+    }]
+    await db.spare_parts.insert_one(doc)
+    return part_with_status(doc)
+
+async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
+    part = await db.spare_parts.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part tidak ditemukan")
+    fields = {k: v for k, v in fields.items() if v is not None}
+    fields["updated_at"] = now_iso()
+    history_entry = {
+        "stage": stage,
+        "date": fields.get(f"{stage.lower()}_date") or now_iso()[:10],
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "timestamp": now_iso(),
+    }
+    await db.spare_parts.update_one(
+        {"id": part_id},
+        {"$set": fields, "$push": {"history": history_entry}}
+    )
+    updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+    return part_with_status(updated)
+
+@api_router.patch("/spare-parts/{part_id}/penawaran")
+async def update_penawaran(part_id: str, payload: PenawaranUpdate, user=Depends(get_current_user)):
+    data = payload.model_dump(exclude_unset=True)
+    return await _update_stage(part_id, "PENAWARAN", data, user)
+
+@api_router.patch("/spare-parts/{part_id}/afa")
+async def update_afa(part_id: str, payload: AFAUpdate, user=Depends(get_current_user)):
+    data = payload.model_dump(exclude_unset=True)
+    return await _update_stage(part_id, "AFA", data, user)
+
+@api_router.patch("/spare-parts/{part_id}/po")
+async def update_po(part_id: str, payload: POUpdate, user=Depends(get_current_user)):
+    data = payload.model_dump(exclude_unset=True)
+    return await _update_stage(part_id, "PO", data, user)
+
+@api_router.patch("/spare-parts/{part_id}/datang")
+async def update_datang(part_id: str, payload: DatangUpdate, user=Depends(get_current_user)):
+    data = payload.model_dump(exclude_unset=True)
+    return await _update_stage(part_id, "DATANG", data, user)
+
+@api_router.patch("/spare-parts/{part_id}/stamp")
+async def update_stamp(part_id: str, payload: StampUpdate, user=Depends(get_current_user)):
+    part = await db.spare_parts.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part tidak ditemukan")
+    await db.spare_parts.update_one(
+        {"id": part_id},
+        {"$set": {"stamp_file": payload.stamp_file.model_dump() if payload.stamp_file else None, "updated_at": now_iso()}}
+    )
+    updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+    return part_with_status(updated)
+
+@api_router.delete("/spare-parts/{part_id}")
+async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
+    require_creator(user)
+    res = await db.spare_parts.delete_one({"id": part_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Part tidak ditemukan")
+    return {"ok": True}
+
+# -------------------------------------------------------------------
+# Dashboard & Reports
+# -------------------------------------------------------------------
+@api_router.get("/dashboard/{line}")
+async def dashboard_line(line: str, month: int = None, year: int = None, user=Depends(get_current_user)):
+    line_up = line.upper().replace("-", " ")
+    now = datetime.now(timezone.utc)
+    if not month:
+        month = now.month
+    if not year:
+        year = now.year
+    m = f"{int(month):02d}"
+    query: Dict[str, Any] = {"line_area": line_up, "order_tanggal": {"$regex": f"^{int(year)}-{m}"}}
+    parts = await db.spare_parts.find(query, {"_id": 0}).sort("order_tanggal", -1).to_list(1000)
+    enriched = [part_with_status(p) for p in parts]
+    summary = {
+        "total": len(enriched),
+        "request": sum(1 for p in enriched if p["status"] == "REQUEST"),
+        "penawaran": sum(1 for p in enriched if p["status"] == "PENAWARAN"),
+        "nego": sum(1 for p in enriched if p["status"] == "NEGO"),
+        "afa": sum(1 for p in enriched if p["status"] == "AFA PROCESS"),
+        "po": sum(1 for p in enriched if p["status"] == "PO PROCESS"),
+        "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
+    }
+    return {"line": line_up, "month": month, "year": year, "summary": summary, "items": enriched}
+
+@api_router.get("/reports/monthly")
+async def monthly_report(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    if not month: month = now.month
+    if not year: year = now.year
+    m = f"{int(month):02d}"
+    query: Dict[str, Any] = {"order_tanggal": {"$regex": f"^{int(year)}-{m}"}}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    parts = await db.spare_parts.find(query, {"_id": 0}).to_list(10000)
+    enriched = [part_with_status(p) for p in parts]
+    total = len(enriched)
+    by_status = {}
+    for s in ["REQUEST", "PENAWARAN", "NEGO", "AFA PROCESS", "PO PROCESS", "DATANG"]:
+        by_status[s] = sum(1 for p in enriched if p["status"] == s)
+    by_line = {}
+    for p in enriched:
+        la = p.get("line_area", "-")
+        by_line[la] = by_line.get(la, 0) + 1
+    return {
+        "line": line or "SEMUA",
+        "month": month,
+        "year": year,
+        "total": total,
+        "by_status": by_status,
+        "by_line": by_line,
+        "items": enriched,
+    }
+
+@api_router.get("/meta/options")
+async def meta_options(user=Depends(get_current_user)):
+    return {
+        "lines": LINE_AREAS,
+        "ranks": RANK_OPTIONS,
+        "statuses": ["REQUEST", "PENAWARAN", "NEGO", "AFA PROCESS", "PO PROCESS", "DATANG"],
+    }
+
+# -------------------------------------------------------------------
+# Register router & middleware
+# -------------------------------------------------------------------
 app.include_router(api_router)
 
 app.add_middleware(
@@ -76,13 +694,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
