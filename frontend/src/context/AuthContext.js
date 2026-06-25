@@ -40,7 +40,12 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
-    try { await api.post("/auth/logout"); } catch (e) { /* ignore */ }
+    try {
+      await api.post("/auth/logout");
+    } catch (e) {
+      // Backend logout is best-effort (JWT); failure is non-fatal but log for visibility.
+      console.warn("Logout request failed (continuing to clear local session):", e?.message || e);
+    }
     localStorage.removeItem("spcs_token");
     localStorage.removeItem("spcs_user");
     setUser(false);

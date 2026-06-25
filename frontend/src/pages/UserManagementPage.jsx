@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Plus, Pencil, Trash2, KeyRound, Info } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api, formatApiError } from "@/lib/api";
@@ -18,7 +18,7 @@ export default function UserManagementPage() {
 
   const isCreator = user?.role === "creator";
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/users");
@@ -26,8 +26,8 @@ export default function UserManagementPage() {
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { fetchUsers(); }, []);
+  }, []);
+  useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
   const openCreate = () => { setEditingUser(null); setDialogOpen(true); };
   const openEdit = (u) => { setEditingUser(u); setDialogOpen(true); };

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { ArrowLeft, Pencil, FileText, ShoppingCart, Truck, FileCheck, FileSignature, Tag, CheckCircle2, Circle, Upload, Stamp } from "lucide-react";
 import AppShell from "@/components/AppShell";
@@ -55,7 +55,7 @@ export default function SparePartDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [stampOpen, setStampOpen] = useState(false);
 
-  const fetchPart = async () => {
+  const fetchPart = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get(`/spare-parts/${id}`);
@@ -65,9 +65,9 @@ export default function SparePartDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
-  useEffect(() => { fetchPart(); }, [id]);
+  useEffect(() => { fetchPart(); }, [fetchPart]);
 
   const goBack = () => {
     // Browser back to preserve list state (query params)

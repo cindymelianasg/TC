@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Download, FileSpreadsheet, FileText } from "lucide-react";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -16,7 +16,7 @@ export default function MonthlyReportPage() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const fetchReport = async () => {
+  const fetchReport = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await api.get("/reports/monthly", { params: { line, month, year } });
@@ -24,9 +24,10 @@ export default function MonthlyReportPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [line, month, year]);
 
-  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, []);
+  // Initial load only — subsequent loads triggered by "Tampilkan" button
+  useEffect(() => { fetchReport(); }, []);
 
   const exportExcel = () => {
     if (!report) return;
