@@ -1,0 +1,99 @@
+{
+  "theme": "Light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "typography": {
+    "heading_font": "IBM Plex Sans",
+    "body_font": "IBM Plex Sans",
+    "rules": {
+      "h1": "text-4xl font-bold tracking-tight text-slate-900",
+      "h2": "text-2xl font-semibold tracking-tight text-slate-900",
+      "h3": "text-xl font-medium text-slate-800",
+      "body": "text-base text-slate-600 leading-relaxed",
+      "labels": "text-xs font-semibold uppercase tracking-[0.1em] text-slate-500"
+    }
+  },
+  "colors": {
+    "backgrounds": {
+      "app": "bg-slate-50",
+      "sidebar": "bg-slate-900",
+      "card": "bg-white",
+      "login_overlay": "bg-slate-900/70"
+    },
+    "text": {
+      "primary": "text-slate-900",
+      "secondary": "text-slate-600",
+      "muted": "text-slate-400",
+      "sidebar": "text-slate-300",
+      "sidebar_active": "text-white"
+    },
+    "actions": {
+      "primary": "bg-blue-600 text-white hover:bg-blue-700 hover:text-white",
+      "secondary": "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50"
+    },
+    "status_badges": {
+      "REQUEST": "bg-slate-100 text-slate-700 border border-slate-200",
+      "PENAWARAN": "bg-sky-100 text-sky-700 border border-sky-200",
+      "NEGO": "bg-yellow-100 text-yellow-700 border border-yellow-200",
+      "AFA PROCESS": "bg-orange-100 text-orange-700 border border-orange-200",
+      "PO PROCESS": "bg-blue-100 text-blue-700 border border-blue-200",
+      "DATANG": "bg-emerald-100 text-emerald-700 border border-emerald-200"
+    }
+  },
+  "spacing_and_layout": {
+    "sidebar": "w-64 flex-shrink-0 border-r border-slate-800",
+    "page_container": "flex h-screen overflow-hidden bg-slate-50",
+    "main_content": "flex-1 overflow-y-auto p-6 md:p-8",
+    "card_padding": "p-6",
+    "gap": "gap-6",
+    "radius": "rounded-xl"
+  },
+  "components": {
+    "cards": "bg-white rounded-xl border border-slate-200 shadow-sm",
+    "inputs": "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+    "table": {
+      "container": "w-full overflow-auto rounded-xl border border-slate-200 bg-white",
+      "header": "bg-slate-50 text-slate-500 font-medium text-sm border-b border-slate-200",
+      "row": "border-b border-slate-100 hover:bg-slate-50 transition-colors text-sm text-slate-700"
+    },
+    "timeline": {
+      "horizontal": "flex items-center w-full justify-between space-x-2 overflow-x-auto py-4",
+      "vertical": "relative border-l-2 border-slate-200 ml-4 space-y-8 py-2"
+    },
+    "file_upload_zone": "border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:bg-slate-50 hover:border-blue-400 transition-colors cursor-pointer"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "mapping": {
+      "PRESSING": "Factory",
+      "WELDING": "Zap",
+      "PAINTING": "Paintbrush",
+      "INJECTION": "Droplets",
+      "SEAT": "Armchair",
+      "ASSEMBLING": "Wrench",
+      "FINAL_INSPECTION": "CarFront",
+      "DASHBOARD": "LayoutDashboard",
+      "DATABASE": "Database",
+      "REQUEST": "FilePlus",
+      "REPORT": "FileBarChart",
+      "USERS": "Users",
+      "LOGOUT": "LogOut"
+    }
+  },
+  "media": {
+    "login_hero": {
+      "url": "https://images.unsplash.com/photo-1776090188315-c481a5753867?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBmYWN0b3J5JTIwaW50ZXJpb3IlMjBibHVyfGVufDB8fHx8MTc4MjM2ODUxOHww&ixlib=rb-4.1.0&q=85",
+      "description": "Industrial factory warehouse image for login page background",
+      "overlay": "bg-slate-900/60"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Use 'IBM Plex Sans' from Google Fonts for all typography to match the industrial and authoritative design archetype.",
+    "Implement the layout with a fixed dark navy sidebar (bg-slate-900) and a light main content area (bg-slate-50).",
+    "The login page must use the provided login_hero image as a full-screen background with the slate-900/60 overlay to ensure the white login card remains highly legible.",
+    "Ensure the status badges precisely use the mapped colors. These badges are critical for the factory workers to quickly identify the state of a part.",
+    "For the Line/Area selection cards, use large Lucide icons (mapped in the icons section), centered in a white rounded card with a hover effect.",
+    "Use standard HTML/Tailwind for layouts and basic cards, but rely on shadcn/ui (if available) for complex components like Dialogs, Tabs, and Selects, styling them to match the guidelines.",
+    "ALL interactive elements and key informational areas MUST include data-testid attributes for testing.",
+    "Ensure the horizontal timeline on the dashboard is scrollable on smaller screens and clearly indicates the current stage of the process."
+  ]
+}
