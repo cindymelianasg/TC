@@ -14,6 +14,7 @@ export default function SparePartDatabasePage() {
   const month = params.get("month") || "";
   const year = params.get("year") || "";
   const status = params.get("status") || "SEMUA";
+  const levelPart = params.get("level") || "SEMUA";
   const q = params.get("q") || "";
   const page = parseInt(params.get("page") || "1", 10);
   const pageSize = 10;
@@ -36,6 +37,7 @@ export default function SparePartDatabasePage() {
       const { data } = await api.get("/spare-parts", {
         params: {
           line, status, q,
+          level_part: levelPart === "SEMUA" ? undefined : levelPart,
           month: month || undefined,
           year: year || undefined,
           page, page_size: pageSize,
@@ -45,7 +47,7 @@ export default function SparePartDatabasePage() {
     } finally {
       setLoading(false);
     }
-  }, [line, status, q, month, year, page]);
+  }, [line, status, q, levelPart, month, year, page]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -65,7 +67,7 @@ export default function SparePartDatabasePage() {
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div>
             <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Line / Area</label>
             <select value={line} onChange={(e) => setParam("line", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" data-testid="filter-line">
@@ -97,9 +99,18 @@ export default function SparePartDatabasePage() {
               {STATUS_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Level Part</label>
+            <select value={levelPart} onChange={(e) => setParam("level", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" data-testid="filter-level">
+              <option value="SEMUA">Semua</option>
+              <option value="Critical">Critical</option>
+              <option value="Substitusi">Substitusi</option>
+              <option value="Stock">Stock</option>
+            </select>
+          </div>
           <form
             onSubmit={(e) => { e.preventDefault(); setParam("q", searchInput); }}
-            className="relative col-span-2 md:col-span-1"
+            className="relative"
           >
             <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Cari</label>
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-[34px]" />
@@ -107,7 +118,7 @@ export default function SparePartDatabasePage() {
               type="text"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Cari part, maker, mesin..."
+              placeholder="Cari part, maker..."
               data-testid="filter-search"
               className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm bg-white"
             />
@@ -125,24 +136,23 @@ export default function SparePartDatabasePage() {
                 <th className="px-3 py-3 text-left font-medium">Nama Barang / Type / Maker</th>
                 <th className="px-3 py-3 text-left font-medium">Maker</th>
                 <th className="px-3 py-3 text-left font-medium">Mesin</th>
+                <th className="px-3 py-3 text-left font-medium">Level</th>
                 <th className="px-3 py-3 text-left font-medium">Qty</th>
                 <th className="px-3 py-3 text-left font-medium">Order Tgl</th>
                 <th className="px-3 py-3 text-left font-medium">AFA No</th>
-                <th className="px-3 py-3 text-left font-medium">AFA Tgl</th>
                 <th className="px-3 py-3 text-left font-medium">PO No</th>
-                <th className="px-3 py-3 text-left font-medium">PO Tgl</th>
                 <th className="px-3 py-3 text-left font-medium">No Datang</th>
-                <th className="px-3 py-3 text-left font-medium">Tgl Datang</th>
+                <th className="px-3 py-3 text-left font-medium">Lampiran</th>
                 <th className="px-3 py-3 text-left font-medium">Status</th>
                 <th className="px-3 py-3 text-left font-medium">Aksi</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={14} className="text-center py-10 text-slate-400">Memuat...</td></tr>
+                <tr><td colSpan={13} className="text-center py-10 text-slate-400">Memuat...</td></tr>
               )}
               {!loading && data.items.length === 0 && (
-                <tr><td colSpan={14} className="text-center py-10 text-slate-400">Tidak ada data ditemukan.</td></tr>
+                <tr><td colSpan={13} className="text-center py-10 text-slate-400">Tidak ada data ditemukan.</td></tr>
               )}
               {!loading && data.items.map((p, i) => (
                 <tr key={p.id} onClick={() => nav(`/parts/${p.id}`, { state: { from: "database" } })} className="border-t border-slate-100 hover:bg-blue-50/40 cursor-pointer transition-colors" data-testid={`database-row-${i}`}>
@@ -153,14 +163,19 @@ export default function SparePartDatabasePage() {
                   </td>
                   <td className="px-3 py-3 text-slate-700">{p.maker}</td>
                   <td className="px-3 py-3 text-slate-700">{p.part_mesin || "-"}</td>
+                  <td className="px-3 py-3">
+                    {p.level_part ? (
+                      <span className={`status-pill ${p.level_part === "Critical" ? "bg-red-100 text-red-700 border-red-200" : p.level_part === "Substitusi" ? "bg-amber-100 text-amber-800 border-amber-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}`}>{p.level_part}</span>
+                    ) : <span className="text-slate-400 text-xs">-</span>}
+                  </td>
                   <td className="px-3 py-3 text-slate-700">{p.qty_order}</td>
                   <td className="px-3 py-3 text-slate-700">{p.order_tanggal}</td>
                   <td className="px-3 py-3 text-slate-700">{p.afa_no || "-"}</td>
-                  <td className="px-3 py-3 text-slate-700">{p.afa_date || "-"}</td>
                   <td className="px-3 py-3 text-slate-700">{p.po_no || "-"}</td>
-                  <td className="px-3 py-3 text-slate-700">{p.po_date || "-"}</td>
                   <td className="px-3 py-3 text-slate-700">{p.datang_no || "-"}</td>
-                  <td className="px-3 py-3 text-slate-700">{p.datang_date || "-"}</td>
+                  <td className="px-3 py-3">
+                    <span className={`text-xs font-semibold ${p.lampiran_status === "DONE" ? "text-emerald-700" : "text-slate-500"}`}>{p.lampiran_status || "BELUM"}</span>
+                  </td>
                   <td className="px-3 py-3"><StatusBadge status={p.status} /></td>
                   <td className="px-3 py-3">
                     <button onClick={(e) => { e.stopPropagation(); nav(`/parts/${p.id}`, { state: { from: "database" } }); }} className="p-1.5 rounded-md hover:bg-slate-100 text-slate-600" data-testid={`database-view-${i}`}>

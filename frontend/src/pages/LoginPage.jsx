@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Cog, Eye, EyeOff, LogIn } from "lucide-react";
+import { Eye, EyeOff, LogIn } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
+import Logo from "@/components/Logo";
 
 export default function LoginPage() {
   const [nik, setNik] = useState("");
@@ -36,12 +37,14 @@ export default function LoginPage() {
     <div className="min-h-screen login-hero flex items-center justify-center p-4" data-testid="login-page">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 animate-fade-up" data-testid="login-card">
         <div className="flex flex-col items-center text-center mb-6">
-          <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center mb-4 shadow-lg">
-            <Cog className="w-8 h-8 text-white" />
+          <Logo size="lg" />
+          <div className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold mt-3">
+            Sparepart Monitoring & Request Tracking
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">SPARE PART</h1>
-          <div className="text-xs uppercase tracking-[0.25em] text-slate-500 font-semibold mt-1">Control System</div>
-          <p className="text-sm text-slate-500 mt-4">Login menggunakan NIK karyawan</p>
+          <div className="text-[11px] uppercase tracking-[0.18em] text-blue-600 font-bold mt-1">
+            TC Body Maintenance Division
+          </div>
+          <p className="text-sm text-slate-500 mt-5">Login menggunakan NIK karyawan</p>
         </div>
 
         <form onSubmit={submit} className="space-y-4">
@@ -96,7 +99,7 @@ export default function LoginPage() {
         </form>
 
         <div className="mt-6 text-center text-xs text-slate-400">
-          © {new Date().getFullYear()} Suzuki — Maintenance Tracking
+          SMART-TC · Version 1.0 · © {new Date().getFullYear()}
         </div>
       </div>
     </div>

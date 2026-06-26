@@ -4,6 +4,7 @@ import "@/App.css";
 
 import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 import LoginPage from "@/pages/LoginPage";
 import LineAreaPage from "@/pages/LineAreaPage";
@@ -19,27 +20,29 @@ import OverviewDashboardPage from "@/pages/OverviewDashboardPage";
 function App() {
   return (
     <div className="App">
-      <AuthProvider>
-        <BrowserRouter>
-          <Toaster position="top-right" richColors closeButton />
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/" element={<Navigate to="/area" replace />} />
+      <ErrorBoundary>
+        <AuthProvider>
+          <BrowserRouter>
+            <Toaster position="top-right" richColors closeButton />
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/" element={<Navigate to="/area" replace />} />
 
-            <Route path="/dashboard" element={<ProtectedRoute><OverviewDashboardPage /></ProtectedRoute>} />
-            <Route path="/area" element={<ProtectedRoute><LineAreaPage /></ProtectedRoute>} />
-            <Route path="/line/:slug" element={<ProtectedRoute><DashboardLinePage /></ProtectedRoute>} />
-            <Route path="/database" element={<ProtectedRoute><SparePartDatabasePage /></ProtectedRoute>} />
-            <Route path="/parts/new" element={<ProtectedRoute><SparePartFormPage /></ProtectedRoute>} />
-            <Route path="/parts/:id" element={<ProtectedRoute><SparePartDetailPage /></ProtectedRoute>} />
-            <Route path="/users" element={<ProtectedRoute><UserManagementPage /></ProtectedRoute>} />
-            <Route path="/reports" element={<ProtectedRoute><MonthlyReportPage /></ProtectedRoute>} />
-            <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+              <Route path="/dashboard" element={<ProtectedRoute><OverviewDashboardPage /></ProtectedRoute>} />
+              <Route path="/area" element={<ProtectedRoute><LineAreaPage /></ProtectedRoute>} />
+              <Route path="/line/:slug" element={<ProtectedRoute><DashboardLinePage /></ProtectedRoute>} />
+              <Route path="/database" element={<ProtectedRoute><SparePartDatabasePage /></ProtectedRoute>} />
+              <Route path="/parts/new" element={<ProtectedRoute><SparePartFormPage /></ProtectedRoute>} />
+              <Route path="/parts/:id" element={<ProtectedRoute><SparePartDetailPage /></ProtectedRoute>} />
+              <Route path="/users" element={<ProtectedRoute><UserManagementPage /></ProtectedRoute>} />
+              <Route path="/reports" element={<ProtectedRoute><MonthlyReportPage /></ProtectedRoute>} />
+              <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 
-            <Route path="*" element={<Navigate to="/area" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+              <Route path="*" element={<Navigate to="/area" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </ErrorBoundary>
     </div>
   );
 }

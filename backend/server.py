@@ -84,7 +84,8 @@ def create_access_token(user_id: str, nik: str, role: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def strip_user(u: dict) -> dict:
-    if not u: return u
+    if not u:
+        return u
     u = dict(u)
     u.pop("_id", None)
     u.pop("password_hash", None)
@@ -104,7 +105,8 @@ def compute_status(part: dict) -> str:
     return "REQUEST"
 
 def part_with_status(part: dict) -> dict:
-    if not part: return part
+    if not part:
+        return part
     part = dict(part)
     part.pop("_id", None)
     part["status"] = compute_status(part)
@@ -214,16 +216,34 @@ class FileRef(BaseModel):
 class SparePartCreate(BaseModel):
     line_area: str
     nama_barang: str
-    type: Optional[str] = ""
+    type: str
     maker: str
-    part_mesin: Optional[str] = ""
+    part_mesin: str
     qty_order: int = 1
     order_tanggal: str  # ISO date string YYYY-MM-DD
+    level_part: str  # "Critical" | "Substitusi" | "Stock"
     keterangan: Optional[str] = ""
-    lampiran: List[FileRef] = []
+    lampiran_status: Optional[str] = "BELUM"  # "BELUM" | "DONE"
+    lampiran_date: Optional[str] = None
+    lampiran_note: Optional[str] = ""
     foto_part: List[FileRef] = []
-    drawing: List[FileRef] = []
-    spesifikasi: List[FileRef] = []
+    ttd_requestor: Optional[FileRef] = None
+    ttd_approval: Optional[FileRef] = None
+
+class SparePartEdit(BaseModel):
+    line_area: Optional[str] = None
+    nama_barang: Optional[str] = None
+    type: Optional[str] = None
+    maker: Optional[str] = None
+    part_mesin: Optional[str] = None
+    qty_order: Optional[int] = None
+    order_tanggal: Optional[str] = None
+    level_part: Optional[str] = None
+    keterangan: Optional[str] = None
+    lampiran_status: Optional[str] = None
+    lampiran_date: Optional[str] = None
+    lampiran_note: Optional[str] = None
+    foto_part: Optional[List[FileRef]] = None
     ttd_requestor: Optional[FileRef] = None
     ttd_approval: Optional[FileRef] = None
 
@@ -255,7 +275,7 @@ class StampUpdate(BaseModel):
 # -------------------------------------------------------------------
 # FastAPI App & Auth
 # -------------------------------------------------------------------
-app = FastAPI(title="Spare Part Control System")
+app = FastAPI(title="SMART-TC — Sparepart Monitoring and Request Tracking")
 api_router = APIRouter(prefix="/api")
 
 async def get_current_user(request: Request) -> dict:
@@ -293,7 +313,11 @@ async def startup():
     await db.users.create_index("nik", unique=True)
     await db.users.create_index("email")
     await db.spare_parts.create_index("line_area")
-    await db.spare_parts.create_index("order_tanggal")
+    await db.spare_parts.create_index("status")
+    await db.spare_parts.create_index("level_part")
+    await db.spare_parts.create_index([("line_area", 1), ("status", 1)])
+    await db.spare_parts.create_index([("order_tanggal", -1)])
+    await db.spare_parts.create_index("requestor_id")
     await db.files.create_index("path", unique=True)
 
     # Init storage
@@ -318,6 +342,29 @@ async def startup():
             }
             await db.users.insert_one(doc)
         logger.info(f"Seeded {len(INITIAL_USERS)} initial users")
+
+    # One-time backfill for parts missing new fields
+    await db.spare_parts.update_many(
+        {"status": {"$exists": False}},
+        [{"$set": {"status": "REQUEST"}}],
+    )
+    await db.spare_parts.update_many(
+        {"level_part": {"$exists": False}},
+        {"$set": {"level_part": "Stock"}},
+    )
+    await db.spare_parts.update_many(
+        {"lampiran_status": {"$exists": False}},
+        {"$set": {"lampiran_status": "BELUM", "lampiran_date": None, "lampiran_note": ""}},
+    )
+    await db.spare_parts.update_many(
+        {"edit_history": {"$exists": False}},
+        {"$set": {"edit_history": []}},
+    )
+    # Recompute status for any docs whose status is stale vs date fields
+    async for doc in db.spare_parts.find({}, {"penawaran_date": 1, "nego_date": 1, "afa_date": 1, "afa_no": 1, "po_date": 1, "po_no": 1, "datang_date": 1, "datang_no": 1, "status": 1, "id": 1}):
+        expected = compute_status(doc)
+        if doc.get("status") != expected:
+            await db.spare_parts.update_one({"id": doc["id"]}, {"$set": {"status": expected}})
 
 # -------------------------------------------------------------------
 # Auth Endpoints
@@ -480,13 +527,19 @@ async def list_spare_parts(
     year: Optional[int] = None,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    level_part: Optional[str] = None,
     page: int = 1,
     page_size: int = 10,
     user=Depends(get_current_user),
 ):
+    """Server-side filter + paginate. Uses stored `status` field for index efficiency."""
     query: Dict[str, Any] = {}
     if line and line.upper() != "SEMUA":
         query["line_area"] = line.upper()
+    if status and status.upper() != "SEMUA":
+        query["status"] = status.upper()
+    if level_part and level_part != "SEMUA":
+        query["level_part"] = level_part
     if month and year:
         m = f"{int(month):02d}"
         query["order_tanggal"] = {"$regex": f"^{int(year)}-{m}"}
@@ -503,16 +556,17 @@ async def list_spare_parts(
             {"datang_no": {"$regex": q, "$options": "i"}},
         ]
 
-    cursor = db.spare_parts.find(query, {"_id": 0}).sort("order_tanggal", -1)
-    all_items = await cursor.to_list(10000)
-    enriched = [part_with_status(p) for p in all_items]
-    if status and status.upper() != "SEMUA":
-        enriched = [p for p in enriched if p["status"] == status.upper()]
-    total = len(enriched)
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_items = enriched[start:end]
-    return {"items": page_items, "total": total, "page": page, "page_size": page_size}
+    total = await db.spare_parts.count_documents(query)
+    skip = max(0, (page - 1) * page_size)
+    cursor = (
+        db.spare_parts.find(query, {"_id": 0})
+        .sort("order_tanggal", -1)
+        .skip(skip)
+        .limit(page_size)
+    )
+    items = await cursor.to_list(page_size)
+    enriched = [part_with_status(p) for p in items]
+    return {"items": enriched, "total": total, "page": page, "page_size": page_size}
 
 @api_router.get("/spare-parts/{part_id}")
 async def get_spare_part(part_id: str, user=Depends(get_current_user)):
@@ -523,6 +577,13 @@ async def get_spare_part(part_id: str, user=Depends(get_current_user)):
 
 @api_router.post("/spare-parts")
 async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_user)):
+    # Validate level_part enum
+    valid_levels = {"Critical", "Substitusi", "Stock"}
+    if payload.level_part not in valid_levels:
+        raise HTTPException(status_code=422, detail="Level Part harus salah satu: Critical, Substitusi, Stock")
+    if payload.lampiran_status and payload.lampiran_status not in {"BELUM", "DONE"}:
+        raise HTTPException(status_code=422, detail="Lampiran status harus BELUM atau DONE")
+
     part_id = str(uuid.uuid4())
     doc = payload.model_dump()
     doc["line_area"] = doc["line_area"].upper()
@@ -548,6 +609,7 @@ async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_u
     doc["datang_note"] = ""
     doc["foto_datang"] = []
     doc["stamp_file"] = None
+    doc["status"] = "REQUEST"  # Stored, indexable
     # Audit log
     doc["history"] = [{
         "stage": "REQUEST",
@@ -556,8 +618,54 @@ async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_u
         "actor_nik": user["nik"],
         "timestamp": now_iso(),
     }]
+    doc["edit_history"] = []
     await db.spare_parts.insert_one(doc)
     return part_with_status(doc)
+
+@api_router.patch("/spare-parts/{part_id}")
+async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get_current_user)):
+    """Edit basic part fields. Permission: creator OR original requestor."""
+    part = await db.spare_parts.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part tidak ditemukan")
+    is_creator = user.get("role") == "creator"
+    is_requestor = part.get("requestor_id") == user["id"]
+    if not (is_creator or is_requestor):
+        raise HTTPException(status_code=403, detail="Hanya creator atau requestor asli yang dapat mengedit request ini")
+
+    update_data = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "level_part" in update_data and update_data["level_part"] not in {"Critical", "Substitusi", "Stock"}:
+        raise HTTPException(status_code=422, detail="Level Part tidak valid")
+    if "lampiran_status" in update_data and update_data["lampiran_status"] not in {"BELUM", "DONE"}:
+        raise HTTPException(status_code=422, detail="Lampiran status harus BELUM atau DONE")
+    if "line_area" in update_data:
+        update_data["line_area"] = update_data["line_area"].upper()
+    if not update_data:
+        return part_with_status({**part})
+
+    # Track changed fields
+    changes = []
+    for k, v in update_data.items():
+        old_val = part.get(k)
+        if old_val != v:
+            changes.append({"field": k, "old": old_val, "new": v})
+    if not changes:
+        return part_with_status({**part})
+
+    edit_entry = {
+        "type": "EDIT",
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "timestamp": now_iso(),
+        "changes": changes,
+    }
+    update_data["updated_at"] = now_iso()
+    await db.spare_parts.update_one(
+        {"id": part_id},
+        {"$set": update_data, "$push": {"edit_history": edit_entry}}
+    )
+    updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+    return part_with_status(updated)
 
 async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
     part = await db.spare_parts.find_one({"id": part_id})
@@ -565,6 +673,9 @@ async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
         raise HTTPException(status_code=404, detail="Part tidak ditemukan")
     fields = {k: v for k, v in fields.items() if v is not None}
     fields["updated_at"] = now_iso()
+    # Compute new status based on merged fields
+    merged = {**part, **fields}
+    fields["status"] = compute_status(merged)
     history_entry = {
         "stage": stage,
         "date": fields.get(f"{stage.lower()}_date") or now_iso()[:10],
@@ -648,8 +759,10 @@ async def dashboard_line(line: str, month: int = None, year: int = None, user=De
 @api_router.get("/reports/monthly")
 async def monthly_report(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
     now = datetime.now(timezone.utc)
-    if not month: month = now.month
-    if not year: year = now.year
+    if not month:
+        month = now.month
+    if not year:
+        year = now.year
     m = f"{int(month):02d}"
     query: Dict[str, Any] = {"order_tanggal": {"$regex": f"^{int(year)}-{m}"}}
     if line and line.upper() != "SEMUA":

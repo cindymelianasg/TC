@@ -61,13 +61,18 @@ code, .font-mono {
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-/* Login background */
+/* Login background — automotive factory with blue tone */
 .login-hero {
     background-image:
-        linear-gradient(135deg, rgba(15,23,42,0.78) 0%, rgba(30,41,59,0.65) 60%, rgba(15,23,42,0.85) 100%),
-        url('https://images.unsplash.com/photo-1565043666747-69f6646db940?auto=format&fit=crop&w=1920&q=80');
+        linear-gradient(135deg, rgba(11,94,215,0.55) 0%, rgba(15,23,42,0.80) 55%, rgba(11,94,215,0.40) 100%),
+        url('https://images.unsplash.com/photo-1565043589221-1a6fd9ae45c7?auto=format&fit=crop&w=1920&q=80');
     background-size: cover;
     background-position: center;
+}
+.login-hero-fallback {
+    background-image:
+        linear-gradient(135deg, rgba(11,94,215,0.55) 0%, rgba(15,23,42,0.80) 55%, rgba(11,94,215,0.40) 100%),
+        url('https://images.unsplash.com/photo-1532635241-17e820acc59f?auto=format&fit=crop&w=1920&q=80');
 }
 
 /* Stamp watermark */

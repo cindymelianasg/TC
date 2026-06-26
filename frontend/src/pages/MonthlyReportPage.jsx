@@ -37,8 +37,10 @@ export default function MonthlyReportPage() {
       "Nama Barang / Type / Maker": `${p.nama_barang}${p.type ? " / " + p.type : ""}${p.maker ? " / " + p.maker : ""}`,
       Maker: p.maker,
       "Part Mesin": p.part_mesin,
+      "Level Part": p.level_part || "",
       "Jumlah Order": p.qty_order,
       "Order Tanggal": p.order_tanggal,
+      "Lampiran": p.lampiran_status || "BELUM",
       "Penawaran Tanggal": p.penawaran_date || "",
       "FB Penawaran Tanggal": p.nego_date || "",
       "AFA Tanggal": p.afa_date || "",
@@ -52,8 +54,8 @@ export default function MonthlyReportPage() {
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Laporan");
-    const filename = `Laporan-SparePart-${line}-${MONTHS_ID[month - 1]}-${year}.xlsx`;
+    XLSX.utils.book_append_sheet(wb, ws, "SMART-TC");
+    const filename = `SMART-TC_Laporan-${line}-${MONTHS_ID[month - 1]}-${year}.xlsx`;
     XLSX.writeFile(wb, filename);
     toast.success("Excel berhasil di-download");
   };
@@ -61,17 +63,23 @@ export default function MonthlyReportPage() {
   const exportPDF = () => {
     if (!report) return;
     const doc = new jsPDF({ orientation: "landscape" });
-    doc.setFontSize(14);
-    doc.text("Laporan Bulanan Spare Part", 14, 14);
-    doc.setFontSize(10);
-    doc.text(`Line: ${line}  •  Bulan: ${MONTHS_ID[month - 1]} ${year}  •  Total: ${report.total} part`, 14, 21);
+    doc.setFontSize(16);
+    doc.setTextColor(11, 94, 215);
+    doc.text("SMART-TC", 14, 14);
+    doc.setFontSize(11);
+    doc.setTextColor(40, 40, 40);
+    doc.text("Sparepart Monitoring & Request Tracking — TC Body Maintenance", 14, 20);
+    doc.setFontSize(9);
+    doc.setTextColor(80, 80, 80);
+    doc.text(`Line: ${line}  •  Bulan: ${MONTHS_ID[month - 1]} ${year}  •  Total: ${report.total} part  •  Cetak: ${new Date().toLocaleString("id-ID")}`, 14, 26);
 
-    const head = [["No", "Nama Barang", "Maker", "Mesin", "Qty", "Order", "AFA", "PO", "Datang", "Status"]];
+    const head = [["No", "Nama Barang", "Maker", "Mesin", "Level", "Qty", "Order", "AFA", "PO", "Datang", "Status"]];
     const body = (report.items || []).map((p, i) => [
       i + 1,
       `${p.nama_barang}${p.type ? "\n" + p.type : ""}`,
       p.maker,
       p.part_mesin || "-",
+      p.level_part || "-",
       p.qty_order,
       p.order_tanggal,
       p.afa_no || "-",
@@ -79,9 +87,9 @@ export default function MonthlyReportPage() {
       p.datang_no || "-",
       p.status,
     ]);
-    autoTable(doc, { head, body, startY: 26, styles: { fontSize: 8 }, headStyles: { fillColor: [37, 99, 235] } });
+    autoTable(doc, { head, body, startY: 32, styles: { fontSize: 8 }, headStyles: { fillColor: [11, 94, 215] } });
 
-    const filename = `Laporan-SparePart-${line}-${MONTHS_ID[month - 1]}-${year}.pdf`;
+    const filename = `SMART-TC_Laporan-${line}-${MONTHS_ID[month - 1]}-${year}.pdf`;
     doc.save(filename);
     toast.success("PDF berhasil di-download");
   };

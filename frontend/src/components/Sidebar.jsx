@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Database, FileBarChart, Users, Settings, LogOut, Cog } from "lucide-react";
+import { LayoutDashboard, Database, FileBarChart, Users, Settings, LogOut } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import Logo from "@/components/Logo";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testId: "nav-dashboard" },
@@ -17,15 +18,7 @@ export default function Sidebar() {
   return (
     <aside className="hidden lg:flex w-64 flex-shrink-0 bg-slate-900 text-slate-200 flex-col h-screen sticky top-0" data-testid="sidebar">
       <div className="p-6 border-b border-slate-800">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
-            <Cog className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Spare Part</div>
-            <div className="text-sm font-semibold text-white leading-tight">Control System</div>
-          </div>
-        </div>
+        <Logo size="md" showSubtitle light />
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">

@@ -42,7 +42,7 @@ export default function OverviewDashboardPage() {
   return (
     <AppShell>
       <div className="mb-5 animate-fade-up">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">SMART-TC Dashboard</h1>
         <p className="text-sm text-slate-500">Ringkasan keseluruhan spare part bulan ini.</p>
       </div>
 
