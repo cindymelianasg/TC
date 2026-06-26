@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Save, RotateCcw, AlertCircle } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import FileUploader from "@/components/FileUploader";
+import SignaturePaste from "@/components/SignaturePaste";
 import { api, formatApiError } from "@/lib/api";
 import { LINE_AREAS } from "@/constants/lines";
 import { useAuth } from "@/context/AuthContext";
@@ -260,12 +261,20 @@ export default function SparePartFormPage() {
           </div>
 
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5 block">TTD Requestor (opsional)</label>
-            <FileUploader single value={form.ttd_requestor} onChange={(v) => update("ttd_requestor", v)} accept="image/*" label="Upload TTD Requestor" testId="form-ttd-requestor" />
+            <SignaturePaste
+              label="Requestor Signature — paste from Shokuin"
+              value={form.ttd_requestor}
+              onChange={(v) => update("ttd_requestor", v)}
+              testId="form-ttd-requestor"
+            />
           </div>
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5 block">TTD Approval (opsional)</label>
-            <FileUploader single value={form.ttd_approval} onChange={(v) => update("ttd_approval", v)} accept="image/*" label="Upload TTD Approval" testId="form-ttd-approval" />
+            <SignaturePaste
+              label="Approval Signature — paste from Shokuin"
+              value={form.ttd_approval}
+              onChange={(v) => update("ttd_approval", v)}
+              testId="form-ttd-approval"
+            />
           </div>
 
           {Object.keys(errors).length > 0 && (

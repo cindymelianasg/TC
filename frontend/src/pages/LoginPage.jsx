@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff, LogIn } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiError } from "@/lib/api";
@@ -14,8 +14,8 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const from = location.state?.from?.pathname || "/area";
+  // After login, ALWAYS go to Dashboard (home of the app)
+  const from = "/dashboard";
 
   const submit = async (e) => {
     e.preventDefault();
@@ -42,7 +42,7 @@ export default function LoginPage() {
             Sparepart Monitoring & Request Tracking
           </div>
           <div className="text-[11px] uppercase tracking-[0.18em] text-blue-600 font-bold mt-1">
-            TC Body Maintenance Division
+            TC Body Maintenance
           </div>
           <p className="text-sm text-slate-500 mt-5">Login menggunakan NIK karyawan</p>
         </div>

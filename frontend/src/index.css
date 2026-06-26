@@ -61,18 +61,14 @@ code, .font-mono {
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-/* Login background — automotive factory with blue tone */
+/* Login background — maintenance spare-part warehouse with blue industrial tone */
 .login-hero {
+    background-color: #0b1424;
     background-image:
-        linear-gradient(135deg, rgba(11,94,215,0.55) 0%, rgba(15,23,42,0.80) 55%, rgba(11,94,215,0.40) 100%),
-        url('https://images.unsplash.com/photo-1565043589221-1a6fd9ae45c7?auto=format&fit=crop&w=1920&q=80');
+        linear-gradient(135deg, rgba(11,94,215,0.45) 0%, rgba(15,23,42,0.82) 55%, rgba(11,94,215,0.30) 100%),
+        url('https://images.unsplash.com/photo-1586528116493-a029325540fa?auto=format&fit=crop&w=1920&q=80');
     background-size: cover;
     background-position: center;
-}
-.login-hero-fallback {
-    background-image:
-        linear-gradient(135deg, rgba(11,94,215,0.55) 0%, rgba(15,23,42,0.80) 55%, rgba(11,94,215,0.40) 100%),
-        url('https://images.unsplash.com/photo-1532635241-17e820acc59f?auto=format&fit=crop&w=1920&q=80');
 }
 
 /* Stamp watermark */

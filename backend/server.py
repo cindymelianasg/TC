@@ -63,6 +63,8 @@ INITIAL_USERS = [
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
+TRACKED_EDIT_FIELDS = {"qty_order", "level_part", "lampiran_status", "lampiran_date"}
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -610,6 +612,7 @@ async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_u
     doc["foto_datang"] = []
     doc["stamp_file"] = None
     doc["status"] = "REQUEST"  # Stored, indexable
+    doc["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": "Request dibuat"}
     # Audit log
     doc["history"] = [{
         "stage": "REQUEST",
@@ -640,30 +643,33 @@ async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get
         raise HTTPException(status_code=422, detail="Lampiran status harus BELUM atau DONE")
     if "line_area" in update_data:
         update_data["line_area"] = update_data["line_area"].upper()
+    # Lampiran logic: DONE -> BELUM clears the submission date automatically
+    if update_data.get("lampiran_status") == "BELUM":
+        update_data["lampiran_date"] = None
     if not update_data:
         return part_with_status({**part})
 
-    # Track changed fields
+    # Track changed fields (only display-tracked subset goes into edit_history)
     changes = []
     for k, v in update_data.items():
+        if k not in TRACKED_EDIT_FIELDS:
+            continue
         old_val = part.get(k)
         if old_val != v:
             changes.append({"field": k, "old": old_val, "new": v})
-    if not changes:
-        return part_with_status({**part})
 
-    edit_entry = {
-        "type": "EDIT",
-        "actor": user["name"],
-        "actor_nik": user["nik"],
-        "timestamp": now_iso(),
-        "changes": changes,
-    }
     update_data["updated_at"] = now_iso()
-    await db.spare_parts.update_one(
-        {"id": part_id},
-        {"$set": update_data, "$push": {"edit_history": edit_entry}}
-    )
+    update_data["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": "Edit Info"}
+    ops = {"$set": update_data}
+    if changes:
+        edit_entry = {
+            "actor": user["name"],
+            "actor_nik": user["nik"],
+            "timestamp": now_iso(),
+            "changes": changes,
+        }
+        ops["$push"] = {"edit_history": edit_entry}
+    await db.spare_parts.update_one({"id": part_id}, ops)
     updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     return part_with_status(updated)
 
@@ -676,6 +682,7 @@ async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
     # Compute new status based on merged fields
     merged = {**part, **fields}
     fields["status"] = compute_status(merged)
+    fields["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": f"Update {stage}"}
     history_entry = {
         "stage": stage,
         "date": fields.get(f"{stage.lower()}_date") or now_iso()[:10],

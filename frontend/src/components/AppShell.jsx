@@ -11,7 +11,7 @@ export default function AppShell({ children }) {
             <div>
               <span className="font-semibold text-slate-600">SMART-TC</span> · Version 1.0
             </div>
-            <div>Developed for TC Body Maintenance Division</div>
+            <div>TC Body Maintenance</div>
           </footer>
         </div>
       </main>

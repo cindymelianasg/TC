@@ -2,15 +2,17 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Pencil, FileText, ShoppingCart, Truck, FileCheck, FileSignature, Tag,
-  CheckCircle2, Circle, Stamp, Info, ZoomIn, History as HistoryIcon, AlertTriangle, Package, Settings as SettingsIcon,
+  CheckCircle2, Circle, ZoomIn, History as HistoryIcon, AlertTriangle, Package, Settings as SettingsIcon, Activity,
 } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import StatusBadge from "@/components/StatusBadge";
 import AuthFileImage from "@/components/AuthFileImage";
 import FileUploader from "@/components/FileUploader";
+import SignaturePaste from "@/components/SignaturePaste";
 import Lightbox from "@/components/Lightbox";
 import { api, formatApiError } from "@/lib/api";
-import { LINE_AREAS, lineFromKey } from "@/constants/lines";
+import { LINE_AREAS } from "@/constants/lines";
+import { formatDateTimeWIB, formatDateID } from "@/lib/dateUtils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -56,7 +58,6 @@ export default function SparePartDetailPage() {
   const [loading, setLoading] = useState(true);
   const [editStageOpen, setEditStageOpen] = useState(false);
   const [editInfoOpen, setEditInfoOpen] = useState(false);
-  const [stampOpen, setStampOpen] = useState(false);
   const [lightbox, setLightbox] = useState({ open: false, fileId: null, filename: "" });
 
   const fetchPart = useCallback(async () => {
@@ -98,10 +99,19 @@ export default function SparePartDetailPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
+          <CurrentStatusCard part={part} />
           <PartInfoCard part={part} />
           <LampiranCard part={part} />
           <FotoDatangCard part={part} onOpen={(f) => setLightbox({ open: true, fileId: f.id, filename: f.filename })} />
-          <StampCard part={part} onOpen={() => setStampOpen(true)} onClickStamp={(f) => setLightbox({ open: true, fileId: f.id, filename: f.filename })} />
+          <SignatureCard part={part} onChange={async (key, file) => {
+            try {
+              const { data } = await api.patch(`/spare-parts/${part.id}`, { [key]: file });
+              setPart(data);
+              toast.success("Tanda tangan disimpan");
+            } catch (err) {
+              toast.error(formatApiError(err.response?.data?.detail) || "Gagal menyimpan");
+            }
+          }} onClickImage={(f) => setLightbox({ open: true, fileId: f.id, filename: f.filename })} canEdit={canEdit} />
           <EditHistoryCard part={part} />
         </div>
 
@@ -111,25 +121,6 @@ export default function SparePartDetailPage() {
       <UpdateDialog open={editStageOpen} onClose={() => setEditStageOpen(false)} part={part} onSaved={(updated) => { setPart(updated); setEditStageOpen(false); }} />
 
       <EditInfoDialog open={editInfoOpen} onClose={() => setEditInfoOpen(false)} part={part} onSaved={(updated) => { setPart(updated); setEditInfoOpen(false); }} />
-
-      <Dialog open={stampOpen} onOpenChange={setStampOpen}>
-        <DialogContent className="sm:max-w-md" data-testid="stamp-dialog">
-          <DialogHeader><DialogTitle>Upload Stempel Digital</DialogTitle></DialogHeader>
-          <FileUploader
-            single accept="image/*" label="Upload gambar stempel"
-            value={part.stamp_file}
-            onChange={async (f) => {
-              try {
-                const { data } = await api.patch(`/spare-parts/${part.id}/stamp`, { stamp_file: f });
-                setPart(data); toast.success("Stempel berhasil disimpan"); setStampOpen(false);
-              } catch (err) {
-                toast.error(formatApiError(err.response?.data?.detail) || "Gagal menyimpan stempel");
-              }
-            }}
-            testId="stamp-uploader"
-          />
-        </DialogContent>
-      </Dialog>
 
       <Lightbox open={lightbox.open} fileId={lightbox.fileId} filename={lightbox.filename} onClose={() => setLightbox({ open: false, fileId: null, filename: "" })} />
     </AppShell>
@@ -182,11 +173,21 @@ function LampiranCard({ part }) {
         <div className="text-sm font-semibold text-slate-700">Lampiran</div>
         <span className={`status-pill ${LAMPIRAN_STYLES[status]}`} data-testid={`lampiran-status-${status.toLowerCase()}`}>{status}</span>
       </div>
-      <p className="text-xs text-slate-500">Status penyerahan dokumen fisik ke supervisor.</p>
+      {status === "BELUM" ? (
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800" data-testid="lampiran-warning">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Lampiran belum diserahkan.</div>
+            <div>Segera menyerahkan lampiran kepada atasan.</div>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-slate-500">Dokumen fisik sudah diserahkan ke supervisor.</p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Tanggal Penyerahan</div>
-          <div className="text-sm text-slate-800 mt-1">{part.lampiran_date || "—"}</div>
+          <div className="text-sm text-slate-800 mt-1" data-testid="lampiran-date-value">{part.lampiran_date ? formatDateID(part.lampiran_date) : "—"}</div>
         </div>
         <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Catatan</div>
@@ -226,30 +227,48 @@ function FotoDatangCard({ part, onOpen }) {
   );
 }
 
-function StampCard({ part, onOpen, onClickStamp }) {
+function SignatureCard({ part, onChange, onClickImage, canEdit }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-      <div className="text-sm font-semibold text-slate-700 mb-4">Tanda Tangan & Stempel</div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <SignatureBox label="TTD Requestor" file={part.ttd_requestor} onClick={onClickStamp} />
-        <SignatureBox label="TTD Approval" file={part.ttd_approval} onClick={onClickStamp} />
-        <div className="border border-dashed border-slate-300 rounded-xl p-4 flex flex-col items-center justify-center">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Digital Stamp</div>
-          {part.stamp_file ? (
-            <button type="button" onClick={() => onClickStamp(part.stamp_file)}>
-              <AuthFileImage fileId={part.stamp_file.id} className="w-32 h-32 object-contain" />
-            </button>
-          ) : (
-            <div className="digital-stamp">
-              APPROVED<br />
-              {part.requestor_name || "—"}
-            </div>
-          )}
-          <button onClick={onOpen} className="mt-3 text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="stamp-upload-btn">
-            <Stamp className="w-3.5 h-3.5" /> {part.stamp_file ? "Ganti Stempel" : "Upload Stempel"}
-          </button>
-        </div>
+    <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm" data-testid="signature-card">
+      <div className="text-sm font-semibold text-slate-700 mb-1">Tanda Tangan</div>
+      <p className="text-xs text-slate-500 mb-4">Paste tanda tangan dari aplikasi Shokuin (Ctrl + V).</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {canEdit ? (
+          <SignaturePaste
+            label="Requestor Signature"
+            value={part.ttd_requestor}
+            onChange={(f) => onChange("ttd_requestor", f)}
+            testId="detail-ttd-requestor"
+          />
+        ) : (
+          <SignatureBoxView label="Requestor Signature" file={part.ttd_requestor} onClick={onClickImage} />
+        )}
+        {canEdit ? (
+          <SignaturePaste
+            label="Approval Signature"
+            value={part.ttd_approval}
+            onChange={(f) => onChange("ttd_approval", f)}
+            testId="detail-ttd-approval"
+          />
+        ) : (
+          <SignatureBoxView label="Approval Signature" file={part.ttd_approval} onClick={onClickImage} />
+        )}
       </div>
+    </div>
+  );
+}
+
+function SignatureBoxView({ label, file, onClick }) {
+  return (
+    <div className="border border-slate-200 rounded-xl p-4 bg-slate-50">
+      <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">{label}</div>
+      {file ? (
+        <button type="button" onClick={() => onClick(file)} className="w-full">
+          <AuthFileImage fileId={file.id} className="w-full h-24 object-contain bg-white rounded" />
+        </button>
+      ) : (
+        <div className="h-24 flex items-center justify-center text-xs text-slate-400 bg-white rounded">— Belum ada TTD —</div>
+      )}
     </div>
   );
 }
@@ -281,31 +300,51 @@ function TimelineCard({ part }) {
   );
 }
 
+const FIELD_LABELS = {
+  qty_order: "Qty Order",
+  level_part: "Level Part",
+  lampiran_status: "Lampiran",
+  lampiran_date: "Tanggal Penyerahan",
+};
+
+function renderEditValue(field, val) {
+  if (val === null || val === undefined || val === "") return "—";
+  if (field === "lampiran_date" && typeof val === "string") return formatDateID(val);
+  return String(val);
+}
+
 function EditHistoryCard({ part }) {
-  const history = part.edit_history || [];
+  const history = (part.edit_history || []).filter((h) => (h.changes || []).some((c) => FIELD_LABELS[c.field]));
   if (!history.length) return null;
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm" data-testid="edit-history-card">
       <div className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
         <HistoryIcon className="w-4 h-4" /> Riwayat Edit
       </div>
-      <ul className="space-y-3">
-        {history.slice().reverse().map((h, i) => (
-          <li key={i} className="border-l-2 border-blue-300 pl-3" data-testid={`edit-history-${i}`}>
-            <div className="text-sm text-slate-800">
-              <span className="font-semibold">{h.actor}</span>
-              <span className="text-slate-400 text-xs ml-2">NIK {h.actor_nik}</span>
-            </div>
-            <div className="text-xs text-slate-500">{h.timestamp}</div>
-            {h.changes && h.changes.length > 0 && (
-              <ul className="text-xs text-slate-600 mt-1 space-y-0.5">
-                {h.changes.map((c, j) => (
-                  <li key={j}><span className="font-mono">{c.field}</span>: <span className="text-red-600 line-through">{String(c.old || "—")}</span> → <span className="text-emerald-600">{String(c.new || "—")}</span></li>
+      <ul className="space-y-4">
+        {history.slice().reverse().map((h, i) => {
+          const visibleChanges = (h.changes || []).filter((c) => FIELD_LABELS[c.field]);
+          if (!visibleChanges.length) return null;
+          return (
+            <li key={i} className="border-l-2 border-blue-300 pl-4" data-testid={`edit-history-${i}`}>
+              <div className="text-xs font-medium text-slate-500" data-testid={`edit-history-${i}-time`}>{formatDateTimeWIB(h.timestamp)}</div>
+              <div className="text-sm text-slate-900 mt-0.5">
+                <span className="font-semibold">{h.actor}</span>
+                <span className="text-slate-400 text-xs ml-2">NIK {h.actor_nik}</span>
+              </div>
+              <ul className="mt-2 space-y-1.5">
+                {visibleChanges.map((c, j) => (
+                  <li key={j} className="text-sm flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 w-32 shrink-0">{FIELD_LABELS[c.field]}</span>
+                    <span className="line-through text-red-600 bg-red-50 px-1.5 py-0.5 rounded">{renderEditValue(c.field, c.old)}</span>
+                    <span className="text-slate-400">→</span>
+                    <span className="text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded">{renderEditValue(c.field, c.new)}</span>
+                  </li>
                 ))}
               </ul>
-            )}
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -331,6 +370,50 @@ function SignatureBox({ label, file, onClick }) {
       ) : (
         <div className="h-24 flex items-center justify-center text-xs text-slate-400 bg-white rounded">— Belum ada TTD —</div>
       )}
+    </div>
+  );
+}
+
+function CurrentStatusCard({ part }) {
+  const STATUS_DOT = {
+    REQUEST: "bg-slate-400", PENAWARAN: "bg-sky-500", NEGO: "bg-yellow-500",
+    "AFA PROCESS": "bg-orange-500", "PO PROCESS": "bg-blue-600", DATANG: "bg-emerald-500",
+  };
+  const PROSE = {
+    REQUEST: "Menunggu Penawaran Vendor",
+    PENAWARAN: "Sedang Proses Penawaran",
+    NEGO: "Sedang Proses Negosiasi",
+    "AFA PROCESS": "Sedang Proses AFA",
+    "PO PROCESS": "Sedang Proses PO",
+    DATANG: "Barang Sudah Datang",
+  };
+  const dot = STATUS_DOT[part.status] || STATUS_DOT.REQUEST;
+  const ub = part.updated_by || {};
+  return (
+    <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl p-6 shadow-lg" data-testid="current-status-card">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-blue-100">
+            <Activity className="w-3.5 h-3.5" /> Current Status
+          </div>
+          <div className="flex items-center gap-3 mt-3">
+            <span className={`w-3.5 h-3.5 rounded-full ${dot} ring-4 ring-white/20`} />
+            <div className="text-2xl font-bold tracking-tight" data-testid="current-status-text">{PROSE[part.status] || part.status}</div>
+          </div>
+          <div className="mt-1 text-sm text-blue-100">Status: <span className="font-semibold">{part.status}</span></div>
+        </div>
+        <div className="text-right text-sm">
+          <div className="text-xs uppercase tracking-wider text-blue-200">Last Update</div>
+          <div className="font-semibold" data-testid="current-status-time">{formatDateTimeWIB(part.updated_at)}</div>
+          {ub.name && (
+            <>
+              <div className="text-xs uppercase tracking-wider text-blue-200 mt-3">Updated By</div>
+              <div className="font-semibold">{ub.name}</div>
+              <div className="text-xs text-blue-100">{ub.action}</div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -461,7 +544,16 @@ function EditInfoDialog({ open, onClose, part, onSaved }) {
     }
   }, [part, open]);
 
-  const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const update = (k, v) => {
+    setForm((f) => {
+      const next = { ...f, [k]: v };
+      // Auto-clear lampiran submission date when status reverts to BELUM
+      if (k === "lampiran_status" && v === "BELUM") {
+        next.lampiran_date = "";
+      }
+      return next;
+    });
+  };
 
   const validate = () => {
     const e = {};
@@ -547,7 +639,10 @@ function EditInfoDialog({ open, onClose, part, onSaved }) {
                 </select>
               </FieldDlg>
               <FieldDlg label="Tanggal Penyerahan">
-                <input type="date" value={form.lampiran_date || ""} onChange={(e) => update("lampiran_date", e.target.value)} className={inputCls("lampiran_date")} data-testid="edit-lampiran-date" />
+                <input type="date" value={form.lampiran_date || ""} onChange={(e) => update("lampiran_date", e.target.value)} disabled={form.lampiran_status === "BELUM"} className={inputCls("lampiran_date") + (form.lampiran_status === "BELUM" ? " bg-slate-100 cursor-not-allowed" : "")} data-testid="edit-lampiran-date" />
+                {form.lampiran_status === "BELUM" && (
+                  <div className="text-[11px] text-amber-600 mt-1">Tanggal akan dikosongkan saat status BELUM.</div>
+                )}
               </FieldDlg>
               <FieldDlg label="Catatan">
                 <input type="text" value={form.lampiran_note || ""} onChange={(e) => update("lampiran_note", e.target.value)} className={inputCls("lampiran_note")} data-testid="edit-lampiran-note" />
