@@ -320,6 +320,11 @@ async def startup():
     await db.spare_parts.create_index([("line_area", 1), ("status", 1)])
     await db.spare_parts.create_index([("order_tanggal", -1)])
     await db.spare_parts.create_index("requestor_id")
+    await db.master_parts.create_index([("line_area", 1), ("part_name", 1)])
+    await db.master_parts.create_index([("line_area", 1), ("level_part", 1)])
+    await db.master_parts.create_index("part_name")
+    await db.movements.create_index([("master_part_id", 1), ("date", -1)])
+    await db.movements.create_index([("line_area", 1), ("type", 1), ("date", -1)])
     await db.files.create_index("path", unique=True)
 
     # Init storage
@@ -800,6 +805,427 @@ async def meta_options(user=Depends(get_current_user)):
         "lines": LINE_AREAS,
         "ranks": RANK_OPTIONS,
         "statuses": ["REQUEST", "PENAWARAN", "NEGO", "AFA PROCESS", "PO PROCESS", "DATANG"],
+    }
+
+# -------------------------------------------------------------------
+# Master Data & Movements helpers
+# -------------------------------------------------------------------
+LEVEL_OPTIONS = {"Critical", "Substitusi", "Stock"}
+
+async def _try_auto_in(part: dict, user: dict):
+    """Look up master part by (name+type+maker+line_area). Skip with warning if missing (option 3b)."""
+    master = await db.master_parts.find_one({
+        "part_name": part.get("nama_barang"),
+        "type": part.get("type"),
+        "maker": part.get("maker"),
+        "line_area": part.get("line_area"),
+    })
+    if not master:
+        return {"created": False, "reason": "Master part tidak ditemukan. Tambahkan part ke Master Data lalu input ulang Tanggal Datang."}
+    qty = int(part.get("qty_order") or 0)
+    if qty <= 0:
+        return {"created": False, "reason": "Qty 0"}
+    existing = await db.movements.find_one({"spare_part_id": part["id"], "type": "IN"})
+    if existing:
+        return {"created": False, "reason": "IN sudah pernah dibuat untuk part ini"}
+    mv = {
+        "id": str(uuid.uuid4()),
+        "master_part_id": master["id"],
+        "spare_part_id": part["id"],
+        "type": "IN",
+        "date": part.get("datang_date"),
+        "quantity": qty,
+        "no_datang": part.get("datang_no"),
+        "line_area": master["line_area"],
+        "note": f"Auto-IN dari procurement {part.get('nama_barang')}",
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "created_at": now_iso(),
+    }
+    await db.movements.insert_one(mv)
+    cs = master.get("current_stock")
+    new_stock = (cs or 0) + qty
+    await db.master_parts.update_one(
+        {"id": master["id"]},
+        {"$set": {"current_stock": new_stock, "updated_at": now_iso(), "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"Auto-IN +{qty}"}}},
+    )
+    return {"created": True, "master_part_id": master["id"], "new_stock": new_stock, "qty": qty}
+
+def compute_stock_status(p: dict) -> str:
+    cs = p.get("current_stock")
+    ms = p.get("minimum_stock") or 0
+    if cs is None:
+        return "NEED UPDATE"
+    if cs <= 0:
+        return "NO STOCK"
+    if cs <= ms:
+        return "BELOW MIN"
+    return "OK"
+
+def compute_warning(p: dict):
+    st = compute_stock_status(p)
+    lvl = p.get("level_part") or "Stock"
+    if lvl == "Critical" and st in ("NO STOCK", "NEED UPDATE", "BELOW MIN"):
+        return "CRITICAL"
+    if lvl == "Substitusi" and st in ("NO STOCK", "BELOW MIN"):
+        return "CHECK_SUBSTITUTE"
+    if st == "BELOW MIN":
+        return "BELOW_MIN"
+    return None
+
+def master_with_status(m: dict) -> dict:
+    if not m:
+        return m
+    m = dict(m)
+    m.pop("_id", None)
+    m["stock_status"] = compute_stock_status(m)
+    m["warning"] = compute_warning(m)
+    return m
+
+# -------------------------------------------------------------------
+# Master Data & Movements models
+# -------------------------------------------------------------------
+class MasterPartCreate(BaseModel):
+    part_name: str
+    type: str = ""
+    maker: str = ""
+    line_area: str
+    current_stock: Optional[int] = None
+    minimum_stock: Optional[int] = 0
+    level_part: str = "Stock"
+    reff: Optional[str] = ""
+    location: Optional[str] = ""
+
+class MasterPartEdit(BaseModel):
+    part_name: Optional[str] = None
+    type: Optional[str] = None
+    maker: Optional[str] = None
+    line_area: Optional[str] = None
+    current_stock: Optional[int] = None
+    minimum_stock: Optional[int] = None
+    level_part: Optional[str] = None
+    reff: Optional[str] = None
+    location: Optional[str] = None
+
+class ImportPreviewRequest(BaseModel):
+    line_area: str
+    rows: List[Dict[str, Any]]
+
+class ImportSaveRequest(BaseModel):
+    line_area: str
+    rows: List[Dict[str, Any]]
+    resolutions: Optional[List[str]] = None
+    default_resolution: str = "skip"
+
+class MovementOutCreate(BaseModel):
+    master_part_id: str
+    date: str
+    quantity: int
+    note: Optional[str] = ""
+
+# -------------------------------------------------------------------
+# Master Data & Movements endpoints
+# -------------------------------------------------------------------
+@api_router.get("/master-parts")
+async def list_master_parts(
+    line: Optional[str] = None,
+    level_part: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    user=Depends(get_current_user),
+):
+    query: Dict[str, Any] = {}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    if level_part and level_part != "SEMUA":
+        query["level_part"] = level_part
+    if q:
+        query["$or"] = [
+            {"part_name": {"$regex": q, "$options": "i"}},
+            {"type": {"$regex": q, "$options": "i"}},
+            {"maker": {"$regex": q, "$options": "i"}},
+            {"reff": {"$regex": q, "$options": "i"}},
+            {"location": {"$regex": q, "$options": "i"}},
+        ]
+    total = await db.master_parts.count_documents(query)
+    skip = max(0, (page - 1) * page_size)
+    cursor = db.master_parts.find(query, {"_id": 0}).sort("part_name", 1).skip(skip).limit(page_size)
+    items = await cursor.to_list(page_size)
+    enriched = [master_with_status(m) for m in items]
+    if status and status != "SEMUA":
+        enriched = [m for m in enriched if m["stock_status"] == status]
+    return {"items": enriched, "total": total, "page": page, "page_size": page_size}
+
+@api_router.get("/master-parts/{mid}")
+async def get_master_part(mid: str, user=Depends(get_current_user)):
+    m = await db.master_parts.find_one({"id": mid}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Master part tidak ditemukan")
+    return master_with_status(m)
+
+@api_router.post("/master-parts")
+async def create_master_part(payload: MasterPartCreate, user=Depends(get_current_user)):
+    require_creator(user)
+    if payload.level_part not in LEVEL_OPTIONS:
+        raise HTTPException(422, "Level Part tidak valid")
+    line_area = payload.line_area.upper()
+    existing = await db.master_parts.find_one({
+        "part_name": payload.part_name, "type": payload.type or "", "maker": payload.maker or "", "line_area": line_area,
+    })
+    if existing:
+        raise HTTPException(400, "Master part dengan kombinasi Name+Type+Maker+Line sudah ada")
+    doc = payload.model_dump()
+    doc["line_area"] = line_area
+    doc["id"] = str(uuid.uuid4())
+    doc["created_at"] = now_iso()
+    doc["updated_at"] = now_iso()
+    doc["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": "Tambah manual"}
+    doc["edit_history"] = []
+    await db.master_parts.insert_one(doc)
+    return master_with_status(doc)
+
+@api_router.put("/master-parts/{mid}")
+async def edit_master_part(mid: str, payload: MasterPartEdit, user=Depends(get_current_user)):
+    require_creator(user)
+    existing = await db.master_parts.find_one({"id": mid})
+    if not existing:
+        raise HTTPException(404, "Master part tidak ditemukan")
+    update_data = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "level_part" in update_data and update_data["level_part"] not in LEVEL_OPTIONS:
+        raise HTTPException(422, "Level Part tidak valid")
+    if "line_area" in update_data:
+        update_data["line_area"] = update_data["line_area"].upper()
+    if not update_data:
+        return master_with_status(existing)
+    changes = []
+    for k, v in update_data.items():
+        if existing.get(k) != v:
+            changes.append({"field": k, "old": existing.get(k), "new": v})
+    update_data["updated_at"] = now_iso()
+    update_data["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": "Edit Master"}
+    ops = {"$set": update_data}
+    if changes:
+        ops["$push"] = {"edit_history": {"actor": user["name"], "actor_nik": user["nik"], "timestamp": now_iso(), "changes": changes}}
+    await db.master_parts.update_one({"id": mid}, ops)
+    updated = await db.master_parts.find_one({"id": mid}, {"_id": 0})
+    return master_with_status(updated)
+
+@api_router.delete("/master-parts/{mid}")
+async def delete_master_part(mid: str, user=Depends(get_current_user)):
+    require_creator(user)
+    res = await db.master_parts.delete_one({"id": mid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Tidak ditemukan")
+    await db.movements.delete_many({"master_part_id": mid})
+    return {"ok": True}
+
+@api_router.get("/master-parts/{mid}/movements")
+async def list_master_part_movements(mid: str, user=Depends(get_current_user)):
+    mvs = await db.movements.find({"master_part_id": mid}, {"_id": 0}).sort("date", -1).to_list(1000)
+    return mvs
+
+@api_router.post("/master-parts/import/preview")
+async def import_preview(payload: ImportPreviewRequest, user=Depends(get_current_user)):
+    require_creator(user)
+    line_area = payload.line_area.upper()
+    out_rows = []
+    for r in payload.rows:
+        name = (r.get("part_name") or "").strip()
+        if not name:
+            out_rows.append({**r, "_status": "INVALID", "_reason": "Part Name kosong"})
+            continue
+        existing = await db.master_parts.find_one({
+            "part_name": name, "type": r.get("type") or "", "maker": r.get("maker") or "", "line_area": line_area,
+        })
+        out_rows.append({
+            **r,
+            "_status": "DUPLICATE" if existing else "NEW",
+            "_existing_id": existing.get("id") if existing else None,
+            "_current_stock_existing": existing.get("current_stock") if existing else None,
+        })
+    new_count = sum(1 for r in out_rows if r["_status"] == "NEW")
+    dup_count = sum(1 for r in out_rows if r["_status"] == "DUPLICATE")
+    invalid_count = sum(1 for r in out_rows if r["_status"] == "INVALID")
+    return {"rows": out_rows, "summary": {"total": len(out_rows), "new": new_count, "duplicate": dup_count, "invalid": invalid_count}}
+
+@api_router.post("/master-parts/import/save")
+async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)):
+    require_creator(user)
+    line_area = payload.line_area.upper()
+    resolutions = payload.resolutions or []
+    default_res = payload.default_resolution
+    created = updated = skipped = invalid = 0
+    for i, r in enumerate(payload.rows):
+        name = (r.get("part_name") or "").strip()
+        if not name:
+            invalid += 1
+            continue
+        res = resolutions[i] if i < len(resolutions) else default_res
+        type_v = r.get("type") or ""
+        maker_v = r.get("maker") or ""
+        existing = await db.master_parts.find_one({
+            "part_name": name, "type": type_v, "maker": maker_v, "line_area": line_area,
+        })
+        lvl = r.get("level_part") or "Stock"
+        if lvl not in LEVEL_OPTIONS:
+            lvl = "Stock"
+        # Stock semantics: keep None as NEED UPDATE; 0 stays 0 (NO STOCK)
+        cs = r.get("current_stock")
+        if cs == "" or cs is None:
+            cs = None
+        else:
+            try:
+                cs = int(cs)
+            except Exception:
+                cs = None
+        ms = r.get("minimum_stock")
+        try:
+            ms = int(ms) if ms not in (None, "") else 0
+        except Exception:
+            ms = 0
+        if existing:
+            if res == "skip":
+                skipped += 1
+                continue
+            if res == "update":
+                upd = {
+                    "current_stock": cs,
+                    "minimum_stock": ms,
+                    "level_part": lvl,
+                    "reff": r.get("reff") or existing.get("reff", ""),
+                    "location": r.get("location") or existing.get("location", ""),
+                    "updated_at": now_iso(),
+                    "updated_by": {"name": user["name"], "nik": user["nik"], "action": "Update via Import"},
+                }
+                await db.master_parts.update_one({"id": existing["id"]}, {"$set": upd})
+                updated += 1
+                continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "part_name": name, "type": type_v, "maker": maker_v, "line_area": line_area,
+            "current_stock": cs, "minimum_stock": ms, "level_part": lvl,
+            "reff": r.get("reff") or "", "location": r.get("location") or "",
+            "created_at": now_iso(), "updated_at": now_iso(),
+            "updated_by": {"name": user["name"], "nik": user["nik"], "action": "Import Excel"},
+            "edit_history": [],
+        }
+        try:
+            await db.master_parts.insert_one(doc)
+            created += 1
+        except Exception:
+            skipped += 1
+    return {"created": created, "updated": updated, "skipped": skipped, "invalid": invalid}
+
+@api_router.post("/movements/out")
+async def create_out(payload: MovementOutCreate, user=Depends(get_current_user)):
+    master = await db.master_parts.find_one({"id": payload.master_part_id})
+    if not master:
+        raise HTTPException(404, "Master part tidak ditemukan")
+    if payload.quantity <= 0:
+        raise HTTPException(400, "Qty harus > 0")
+    cs = master.get("current_stock") or 0
+    if cs < payload.quantity:
+        raise HTTPException(400, f"Stock tidak cukup. Current: {cs}, OUT: {payload.quantity}")
+    mv = {
+        "id": str(uuid.uuid4()),
+        "master_part_id": payload.master_part_id,
+        "type": "OUT",
+        "date": payload.date,
+        "quantity": payload.quantity,
+        "line_area": master["line_area"],
+        "note": payload.note or "",
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "created_at": now_iso(),
+    }
+    await db.movements.insert_one(mv)
+    new_stock = cs - payload.quantity
+    await db.master_parts.update_one(
+        {"id": master["id"]},
+        {"$set": {"current_stock": new_stock, "updated_at": now_iso(), "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"OUT -{payload.quantity}"}}},
+    )
+    return {"movement": {k: v for k, v in mv.items() if k != "_id"}, "new_stock": new_stock}
+
+@api_router.get("/movements")
+async def list_movements(
+    line: Optional[str] = None,
+    type: Optional[str] = None,
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    user=Depends(get_current_user),
+):
+    query: Dict[str, Any] = {}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    if type and type in ("IN", "OUT"):
+        query["type"] = type
+    if month and year:
+        query["date"] = {"$regex": f"^{int(year)}-{int(month):02d}"}
+    elif year:
+        query["date"] = {"$regex": f"^{int(year)}-"}
+    total = await db.movements.count_documents(query)
+    skip = max(0, (page - 1) * page_size)
+    items = await db.movements.find(query, {"_id": 0}).sort("date", -1).skip(skip).limit(page_size).to_list(page_size)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+@api_router.get("/stock/summary")
+async def stock_summary(line: Optional[str] = None, user=Depends(get_current_user)):
+    query: Dict[str, Any] = {}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(100000)
+    total = len(all_parts)
+    critical = 0
+    need_order = 0
+    need_update = 0
+    no_stock = 0
+    below_min = 0
+    critical_list = []
+    for p in all_parts:
+        st = compute_stock_status(p)
+        warn = compute_warning(p)
+        if p.get("level_part") == "Critical" and st in ("NO STOCK", "NEED UPDATE", "BELOW MIN"):
+            critical += 1
+            critical_list.append({**p, "stock_status": st, "warning": warn})
+        if warn == "BELOW_MIN" or warn == "CHECK_SUBSTITUTE":
+            need_order += 1
+        if st == "NEED UPDATE":
+            need_update += 1
+        if st == "NO STOCK":
+            no_stock += 1
+        if st == "BELOW MIN":
+            below_min += 1
+    # Sort critical list by status urgency
+    order = {"NO STOCK": 0, "NEED UPDATE": 1, "BELOW MIN": 2}
+    critical_list.sort(key=lambda p: order.get(p["stock_status"], 99))
+    return {
+        "total": total, "critical": critical, "need_order": need_order, "need_update": need_update,
+        "no_stock": no_stock, "below_min": below_min,
+        "critical_list": critical_list[:50],
+    }
+
+@api_router.get("/reports/movement-monthly")
+async def movement_monthly_report(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    if not month:
+        month = now.month
+    if not year:
+        year = now.year
+    m = f"{int(month):02d}"
+    query: Dict[str, Any] = {"date": {"$regex": f"^{int(year)}-{m}"}}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = line.upper()
+    items = await db.movements.find(query, {"_id": 0}).sort("date", -1).to_list(100000)
+    in_items = [m for m in items if m["type"] == "IN"]
+    out_items = [m for m in items if m["type"] == "OUT"]
+    return {
+        "month": month, "year": year, "line": line or "SEMUA",
+        "in": {"count": len(in_items), "total_qty": sum(m["quantity"] for m in in_items), "items": in_items},
+        "out": {"count": len(out_items), "total_qty": sum(m["quantity"] for m in out_items), "items": out_items},
     }
 
 # -------------------------------------------------------------------

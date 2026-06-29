@@ -450,6 +450,13 @@ function UpdateDialog({ open, onClose, part, onSaved }) {
       if (stage === "datang") payload = datang;
       const { data } = await api.patch(`/spare-parts/${part.id}/${stage}`, payload);
       toast.success("Berhasil disimpan");
+      if (data.auto_in) {
+        if (data.auto_in.created) {
+          toast.success(`Auto-IN +${data.auto_in.qty} pcs · Stock = ${data.auto_in.new_stock}`);
+        } else if (data.auto_in.reason && stage === "datang") {
+          toast.warning(data.auto_in.reason);
+        }
+      }
       onSaved(data);
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Gagal menyimpan");

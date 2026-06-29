@@ -16,6 +16,9 @@ import UserManagementPage from "@/pages/UserManagementPage";
 import MonthlyReportPage from "@/pages/MonthlyReportPage";
 import SettingsPage from "@/pages/SettingsPage";
 import OverviewDashboardPage from "@/pages/OverviewDashboardPage";
+import MasterDataPage from "@/pages/MasterDataPage";
+import MasterImportPage from "@/pages/MasterImportPage";
+import MasterMovementHistoryPage from "@/pages/MasterMovementHistoryPage";
 
 function App() {
   return (
@@ -37,6 +40,9 @@ function App() {
               <Route path="/users" element={<ProtectedRoute><UserManagementPage /></ProtectedRoute>} />
               <Route path="/reports" element={<ProtectedRoute><MonthlyReportPage /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+              <Route path="/master" element={<ProtectedRoute><MasterDataPage /></ProtectedRoute>} />
+              <Route path="/master/import" element={<ProtectedRoute><MasterImportPage /></ProtectedRoute>} />
+              <Route path="/master/:id/movements" element={<ProtectedRoute><MasterMovementHistoryPage /></ProtectedRoute>} />
 
               <Route path="*" element={<Navigate to="/area" replace />} />
             </Routes>
