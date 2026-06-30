@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertOctagon, AlertTriangle, RefreshCcw, FileText, FileCheck, ShoppingCart, Truck, X } from "lucide-react";
+import { AlertOctagon, AlertTriangle, RefreshCcw, FileText, FileCheck, ShoppingCart, Truck, X, Database } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { LINE_AREAS } from "@/constants/lines";
@@ -73,6 +73,27 @@ export default function OverviewDashboardPage() {
           <StatCard testId="dash-stat-datang" label="Datang" value={procurement.datang} icon={Truck} accent="emerald" />
         </div>
       </section>
+
+      {/* TOTAL PART PER LINE — only when specific line is selected */}
+      {line !== "SEMUA" && (
+        <section className="mb-8" data-testid="dash-section-total-part">
+          <h2 className="text-sm font-semibold text-slate-700 mb-3 uppercase tracking-wider">Total Part — {line}</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-2xl border border-blue-200 p-5 shadow-sm" data-testid="dash-stat-total-part">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Part (Master Data)</div>
+                  <div className="text-4xl font-bold text-blue-700 mt-2 tracking-tight tabular-nums">{loading ? "—" : (stockSummary?.total ?? 0)}</div>
+                  <div className="text-xs text-slate-400 mt-1">Jumlah part terdaftar di {line}</div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+                  <Database className="w-5 h-5 text-blue-600" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* STOCK ACTION REQUIRED */}
       <section className="mb-8" data-testid="dash-section-stock">

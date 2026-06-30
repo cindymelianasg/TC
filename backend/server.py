@@ -40,14 +40,23 @@ DEFAULT_PASSWORD = os.environ.get('DEFAULT_PASSWORD', '123456')
 CREATOR_NIK = os.environ.get('CREATOR_NIK', '32521')
 
 LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLING & FI"]
+VALID_LINE_AREAS = set(LINE_AREAS)
 RANK_OPTIONS = ["SEC.HEAD", "SUPERVISOR", "SENIOR FOREMAN", "FOREMAN", "PELAKSANA"]
 
 def normalize_line(line: Optional[str]) -> Optional[str]:
+    """Normalise for query filtering only. Does NOT silently migrate legacy values.
+    Use validate_line_area() for write operations to reject invalid values."""
     if not line:
         return line
+    return line.upper().strip()
+
+def validate_line_area(line: Optional[str]) -> str:
+    """Strict validation for create/update/import. Raises 422 if invalid."""
+    if not line:
+        raise HTTPException(422, "Line/Area wajib diisi")
     u = line.upper().strip()
-    if u in ("ASSEMBLING", "FINAL INSPECTION", "ASSEMBLING & FI", "ASSEMBLING&FI"):
-        return "ASSEMBLING & FI"
+    if u not in VALID_LINE_AREAS:
+        raise HTTPException(422, f"Line/Area '{line}' tidak valid. Pilih salah satu: {', '.join(LINE_AREAS)}")
     return u
 
 INITIAL_USERS = [
@@ -1126,7 +1135,7 @@ async def create_master_part(payload: MasterPartCreate, user=Depends(get_current
     require_creator(user)
     if payload.level_part not in LEVEL_OPTIONS:
         raise HTTPException(422, "Level Part tidak valid")
-    line_area = payload.line_area.upper()
+    line_area = validate_line_area(payload.line_area)
     existing = await db.master_parts.find_one({
         "part_name": payload.part_name, "type": payload.type or "", "maker": payload.maker or "", "line_area": line_area,
     })
@@ -1152,7 +1161,7 @@ async def edit_master_part(mid: str, payload: MasterPartEdit, user=Depends(get_c
     if "level_part" in update_data and update_data["level_part"] not in LEVEL_OPTIONS:
         raise HTTPException(422, "Level Part tidak valid")
     if "line_area" in update_data:
-        update_data["line_area"] = update_data["line_area"].upper()
+        update_data["line_area"] = validate_line_area(update_data["line_area"])
     if not update_data:
         return master_with_status(existing)
     changes = []
@@ -1167,6 +1176,24 @@ async def edit_master_part(mid: str, payload: MasterPartEdit, user=Depends(get_c
     await db.master_parts.update_one({"id": mid}, ops)
     updated = await db.master_parts.find_one({"id": mid}, {"_id": 0})
     return master_with_status(updated)
+
+@api_router.delete("/master-parts-admin/reset-all")
+async def reset_master_data(user=Depends(get_current_user)):
+    """Creator-only: Wipe ALL master_parts + their movements. Used after structure changes."""
+    require_creator(user)
+    mp_res = await db.master_parts.delete_many({})
+    mv_res = await db.movements.delete_many({})
+    return {"ok": True, "deleted_master_parts": mp_res.deleted_count, "deleted_movements": mv_res.deleted_count}
+
+@api_router.get("/master-parts-admin/invalid-lines")
+async def list_invalid_line_parts(user=Depends(get_current_user)):
+    """Returns count + sample of master_parts whose line_area is not in VALID_LINE_AREAS.
+    Used by UI to surface migration warnings."""
+    invalid = await db.master_parts.find(
+        {"line_area": {"$nin": list(VALID_LINE_AREAS)}}, {"_id": 0}
+    ).limit(50).to_list(50)
+    count = await db.master_parts.count_documents({"line_area": {"$nin": list(VALID_LINE_AREAS)}})
+    return {"count": count, "samples": [master_with_status(m) for m in invalid], "valid_lines": LINE_AREAS}
 
 @api_router.delete("/master-parts/{mid}")
 async def delete_master_part(mid: str, user=Depends(get_current_user)):
@@ -1185,7 +1212,7 @@ async def list_master_part_movements(mid: str, user=Depends(get_current_user)):
 @api_router.post("/master-parts/import/preview")
 async def import_preview(payload: ImportPreviewRequest, user=Depends(get_current_user)):
     require_creator(user)
-    line_area = payload.line_area.upper()
+    line_area = validate_line_area(payload.line_area)
     out_rows = []
     for r in payload.rows:
         name = (r.get("part_name") or "").strip()
@@ -1209,7 +1236,7 @@ async def import_preview(payload: ImportPreviewRequest, user=Depends(get_current
 @api_router.post("/master-parts/import/save")
 async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)):
     require_creator(user)
-    line_area = payload.line_area.upper()
+    line_area = validate_line_area(payload.line_area)
     resolutions = payload.resolutions or []
     default_res = payload.default_resolution
     created = updated = skipped = invalid = 0

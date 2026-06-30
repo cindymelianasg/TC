@@ -11,16 +11,22 @@ export const LINE_AREAS = [
   { key: "ASSEMBLING & FI", slug: "assembling", label: "Assembling & Final Inspection", icon: Wrench, color: "text-sky-600", bg: "bg-sky-50" },
 ];
 
+export const VALID_LINE_KEYS = LINE_AREAS.map((l) => l.key);
+export function isValidLineKey(key) {
+  if (!key) return false;
+  return VALID_LINE_KEYS.includes(String(key).toUpperCase().trim());
+}
+
 export function lineFromSlug(slug) {
-  // Backwards compat: 'final-inspection' maps to assembling
+  // Backwards compat for url-routing only: 'final-inspection' maps to assembling slug.
   if (slug === "final-inspection") return LINE_AREAS.find((l) => l.key === "ASSEMBLING & FI");
   if (slug === "assembling") return LINE_AREAS.find((l) => l.key === "ASSEMBLING & FI");
   return LINE_AREAS.find((l) => l.slug === slug);
 }
 
 export function lineFromKey(key) {
-  const k = (key || "").toUpperCase();
-  if (k === "ASSEMBLING" || k === "FINAL INSPECTION") return LINE_AREAS.find((l) => l.key === "ASSEMBLING & FI");
+  const k = (key || "").toUpperCase().trim();
+  // Strict: do NOT silently migrate legacy values. Returns undefined for invalid.
   return LINE_AREAS.find((l) => l.key === k);
 }
 

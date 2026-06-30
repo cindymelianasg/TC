@@ -296,7 +296,7 @@ export default function SparePartFormPage() {
           </Field>
 
           <div className="border-t pt-4">
-            <SectionTitle title="Lampiran" subtitle="Status penyerahan dokumen lampiran ke supervisor" />
+            <SectionTitle title="Lampiran" subtitle="Status penyerahan dokumen lampiran ke atasan" />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
               <Field label="Status Lampiran">
                 <div className="flex items-center gap-3">

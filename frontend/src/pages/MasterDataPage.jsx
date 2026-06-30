@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, MapPin, Check } from "lucide-react";
+import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, MapPin, Check, AlertTriangle, RotateCcw } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api, formatApiError } from "@/lib/api";
-import { LINE_AREAS } from "@/constants/lines";
+import { LINE_AREAS, VALID_LINE_KEYS } from "@/constants/lines";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -66,6 +66,17 @@ export default function MasterDataPage() {
   const [outPart, setOutPart] = useState(null);
   const [locationEditId, setLocationEditId] = useState(null);
   const [locationDraft, setLocationDraft] = useState("");
+  const [resetOpen, setResetOpen] = useState(false);
+  const [invalidLines, setInvalidLines] = useState({ count: 0, samples: [] });
+
+  // Fetch invalid line/area count for migration banner
+  const fetchInvalidLines = useCallback(async () => {
+    try {
+      const { data } = await api.get("/master-parts-admin/invalid-lines");
+      setInvalidLines(data);
+    } catch { /* non-blocking */ }
+  }, []);
+  useEffect(() => { fetchInvalidLines(); }, [fetchInvalidLines]);
 
   // Auto-open Add dialog if redirected from Request Form
   useEffect(() => {
@@ -130,6 +141,18 @@ export default function MasterDataPage() {
     } catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
   };
 
+  const doReset = async () => {
+    try {
+      const { data } = await api.delete("/master-parts-admin/reset-all");
+      toast.success(`Reset selesai: ${data.deleted_master_parts} master part & ${data.deleted_movements} movement dihapus`);
+      setResetOpen(false);
+      setInvalidLines({ count: 0, samples: [] });
+      fetchData();
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Gagal reset");
+    }
+  };
+
   const beginEditLocation = (m) => {
     setLocationEditId(m.id);
     setLocationDraft(m.location || "");
@@ -160,10 +183,36 @@ export default function MasterDataPage() {
               <button onClick={() => { setEditPart(null); setEditOpen(true); }} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="master-add-btn">
                 <Plus className="w-4 h-4" /> Tambah Part
               </button>
+              <button onClick={() => setResetOpen(true)} className="border border-red-200 text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="master-reset-btn" title="Hapus semua Master Data">
+                <RotateCcw className="w-4 h-4" /> Reset Master Data
+              </button>
             </>
           )}
         </div>
       </div>
+
+      {invalidLines.count > 0 && (
+        <div className="mb-4 p-4 rounded-xl bg-amber-50 border border-amber-300 flex items-start gap-3" data-testid="master-invalid-banner">
+          <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-amber-800">Invalid Line/Area data detected. Please migrate or reset Master Data.</div>
+            <div className="text-xs text-amber-700 mt-1">
+              Ditemukan <strong>{invalidLines.count}</strong> part dengan Line/Area yang tidak valid (contoh: ASSEMBLING, FI, Final Inspection). Valid: {VALID_LINE_KEYS.join(", ")}.
+            </div>
+            {invalidLines.samples?.length > 0 && (
+              <div className="text-xs text-amber-700 mt-1">
+                Contoh part: {invalidLines.samples.slice(0, 5).map((m) => `"${m.part_name}" (${m.line_area})`).join(", ")}
+                {invalidLines.samples.length > 5 ? "..." : ""}
+              </div>
+            )}
+            {isCreator && (
+              <button onClick={() => setResetOpen(true)} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-amber-800 underline hover:text-amber-900" data-testid="master-invalid-reset-link">
+                Reset Master Data sekarang →
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
@@ -296,7 +345,47 @@ export default function MasterDataPage() {
 
       <EditDialog open={editOpen} onClose={() => { setEditOpen(false); setPrefilledNew(null); }} part={editPart} prefill={prefilledNew} onSaved={() => { setEditOpen(false); setPrefilledNew(null); fetchData(); }} />
       <OutDialog open={outOpen} onClose={() => setOutOpen(false)} part={outPart} onSaved={() => { setOutOpen(false); fetchData(); }} />
+      <ResetDialog open={resetOpen} onClose={() => setResetOpen(false)} onConfirm={doReset} />
     </AppShell>
+  );
+}
+
+function ResetDialog({ open, onClose, onConfirm }) {
+  const [confirmText, setConfirmText] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (open) setConfirmText(""); }, [open]);
+  const ready = confirmText.trim().toUpperCase() === "RESET";
+  const handle = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md" data-testid="reset-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-red-700">
+            <AlertTriangle className="w-5 h-5" /> Reset Master Data
+          </DialogTitle>
+        </DialogHeader>
+        <div className="text-sm text-slate-700 space-y-3">
+          <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800">
+            <p className="font-semibold">All Master Data records will be deleted. This action cannot be undone.</p>
+            <p className="text-xs mt-1">Termasuk seluruh histori IN/OUT movement. Setelah reset, lakukan Import Excel ulang dengan Line/Area yang valid.</p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Ketik &quot;RESET&quot; untuk konfirmasi</label>
+            <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              placeholder="RESET" data-testid="reset-confirm-input" />
+          </div>
+        </div>
+        <DialogFooter>
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm" data-testid="reset-cancel">Cancel</button>
+          <button onClick={handle} disabled={!ready || busy}
+            className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50"
+            data-testid="reset-confirm">
+            {busy ? "Menghapus..." : "Confirm Reset"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -332,8 +421,11 @@ function EditDialog({ open, onClose, part, prefill, onSaved }) {
 
   useEffect(() => {
     if (part) {
+      // IMPORTANT: never silently replace invalid legacy line_area. Preserve raw value
+      // so UI can warn the Creator instead of defaulting to PRESSING.
       setForm({
-        part_name: part.part_name || "", type: part.type || "", maker: part.maker || "", line_area: part.line_area || "ASSEMBLING & FI",
+        part_name: part.part_name || "", type: part.type || "", maker: part.maker || "",
+        line_area: part.line_area || "",
         current_stock: part.current_stock ?? "", minimum_stock: part.minimum_stock ?? 0, level_part: part.level_part || "Stock",
         reff: part.reff || "", location: part.location || "",
       });
@@ -351,9 +443,14 @@ function EditDialog({ open, onClose, part, prefill, onSaved }) {
   }, [part, prefill, open]);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const lineInvalid = form.line_area && !VALID_LINE_KEYS.includes(form.line_area);
 
   const save = async () => {
     if (!form.part_name || !form.line_area) { toast.error("Part Name & Line wajib"); return; }
+    if (!VALID_LINE_KEYS.includes(form.line_area)) {
+      toast.error(`Line/Area "${form.line_area}" tidak valid. Pilih: ${VALID_LINE_KEYS.join(", ")}`);
+      return;
+    }
     setBusy(true);
     try {
       const payload = { ...form };
@@ -375,7 +472,26 @@ function EditDialog({ open, onClose, part, prefill, onSaved }) {
           <Input label="Part Name *" value={form.part_name} onChange={(v) => upd("part_name", v)} testId="me-name" />
           <Input label="Type" value={form.type} onChange={(v) => upd("type", v)} testId="me-type" />
           <Input label="Maker" value={form.maker} onChange={(v) => upd("maker", v)} testId="me-maker" />
-          <SelectField label="Line / Area *" value={form.line_area} onChange={(v) => upd("line_area", v)} options={LINE_AREAS.map((l) => l.key)} testId="me-line" />
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Line / Area *</label>
+            <select
+              value={form.line_area}
+              onChange={(e) => upd("line_area", e.target.value)}
+              data-testid="me-line"
+              className={`w-full rounded-lg border px-3 py-2 text-sm bg-white ${lineInvalid ? "border-amber-400 bg-amber-50" : "border-slate-300"}`}
+            >
+              {/* If current value is invalid, include it as a flagged option so it doesn't silently default */}
+              {lineInvalid && <option value={form.line_area}>⚠ {form.line_area} (invalid — pilih nilai valid)</option>}
+              {!form.line_area && <option value="">-- Pilih Line --</option>}
+              {LINE_AREAS.map((o) => <option key={o.key} value={o.key}>{o.key}</option>)}
+            </select>
+            {lineInvalid && (
+              <div className="mt-1 text-xs text-amber-700 flex items-start gap-1" data-testid="me-line-invalid">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>Invalid Line/Area: <strong>&quot;{form.line_area}&quot;</strong>. Pilih salah satu Line/Area valid sebelum menyimpan.</span>
+              </div>
+            )}
+          </div>
           <Input label="Current Stock (kosong = NEED UPDATE, 0 = NO STOCK)" type="number" value={form.current_stock} onChange={(v) => upd("current_stock", v)} testId="me-stock" />
           <Input label="Minimum Stock" type="number" value={form.minimum_stock} onChange={(v) => upd("minimum_stock", v)} testId="me-min" />
           <SelectField label="Level Part" value={form.level_part} onChange={(v) => upd("level_part", v)} options={LEVELS} testId="me-level" />
