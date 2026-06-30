@@ -728,7 +728,15 @@ async def update_po(part_id: str, payload: POUpdate, user=Depends(get_current_us
 @api_router.patch("/spare-parts/{part_id}/datang")
 async def update_datang(part_id: str, payload: DatangUpdate, user=Depends(get_current_user)):
     data = payload.model_dump(exclude_unset=True)
-    return await _update_stage(part_id, "DATANG", data, user)
+    updated = await _update_stage(part_id, "DATANG", data, user)
+    # Trigger Auto-IN when both datang_date & datang_no are set on the part
+    if updated.get("datang_date") and updated.get("datang_no"):
+        auto_in = await _try_auto_in(updated, user)
+        if auto_in.get("created"):
+            # Refresh part data after auto-IN
+            refreshed = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+            return part_with_status(refreshed)
+    return updated
 
 @api_router.patch("/spare-parts/{part_id}/stamp")
 async def update_stamp(part_id: str, payload: StampUpdate, user=Depends(get_current_user)):

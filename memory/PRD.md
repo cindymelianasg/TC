@@ -1,51 +1,58 @@
-# SMART-TC — Sparepart Monitoring & Request Tracking for TC Body
+# SMART-TC — Sparepart Monitoring & Request Tracking
 
-## Modules (after v1.1 — June 2026)
+## Original Problem
+SMART-TC adalah aplikasi internal pabrik untuk monitor progress permintaan spare part (Request → Penawaran → Nego → AFA → PO → Datang).
+Bukan inventory/stock management system, melainkan progress tracker untuk maintenance team.
 
-### 1. Procurement Tracking (existing, unchanged)
-Request → Penawaran → Nego → AFA → PO → Datang. NIK login, per-line dashboards, monthly report.
+## User Personas
+- **Creator (Cindy Meliana)**: full CRUD, kelola user, semua data.
+- **Supervisor/Foreman**: lihat data, ajukan request, update progress untuk request mereka.
 
-### 2. Master Data & Part Movement Monitoring (NEW)
-- **MasterPart** collection: `{part_name, type, maker, line_area, current_stock (Optional[int]), minimum_stock, level_part, reff, location}`. Unique key = `part_name + type + maker + line_area`.
-- **Stock semantics**: `current_stock = null` ⇒ `NEED UPDATE`; `0` ⇒ `NO STOCK`; `<= minimum_stock` ⇒ `BELOW MIN`; else `OK`.
-- **Warnings**: Critical+no/below/null ⇒ `CRITICAL` (red, Order Immediately); Substitusi+no/below ⇒ `CHECK_SUBSTITUTE`; below min ⇒ `BELOW_MIN`.
-- **Excel import wizard** (client-side parsing with `xlsx`):
-  - Parses sheet with `NAME OF PART` header. Splits "Name/Type/Maker" by `/`. Picks rightmost `STOCK` column for current_stock.
-  - 3-step UI: Upload → Preview (sheet picker + row inspection) → Validate (new/duplicate/invalid count + skip/update conflict resolution).
-- **Movements** collection: `{type: IN|OUT, master_part_id, spare_part_id?, date, quantity, no_datang?, line_area, actor, note}`.
-- **Auto-IN trigger**: when stage update `/spare-parts/{id}/datang` succeeds with `datang_date`+`datang_no`, backend looks up matching master_part. If found, creates IN movement + increments stock. If not found, returns `auto_in.reason` warning. Idempotent (1 IN per spare_part_id).
-- **OUT** manual via dialog from Master Data page — decrements stock with validation (can't go negative).
-- **Movement history** page per master part.
-- **Permission**: creator-only mutations (create/edit/delete master, import). Anyone can view + create OUT.
+## Core Requirements
+- Login pakai NIK
+- Tracking progress per stage dengan tanggal & nomor dokumen
+- Master Data spare part dengan klasifikasi Level Part (Critical / Substitusi / Stock)
+- Auto-IN movement saat Datang stage diisi → update stock master
+- Manual OUT movement & reverse OUT saat request dihapus
+- Filter & monitoring per Line/Area
 
-## Endpoints (new)
-- `GET /api/master-parts` (filters: line, level_part, status, q, page) – paginated via skip+limit, indexed.
-- `GET /api/master-parts/{id}` · `POST /api/master-parts` · `PUT /api/master-parts/{id}` (with edit history) · `DELETE`
-- `GET /api/master-parts/{id}/movements`
-- `POST /api/master-parts/import/preview` → returns rows with `_status: NEW|DUPLICATE|INVALID`.
-- `POST /api/master-parts/import/save` → bulk insert with conflict_resolution (skip|update).
-- `POST /api/movements/out` · `GET /api/movements` (paginated).
-- `GET /api/stock/summary` (total, critical, need_order, need_update, no_stock, below_min, critical_list).
-- `GET /api/reports/movement-monthly`.
+## Architecture
+- Backend: FastAPI + MongoDB (motor async) di /app/backend
+- Frontend: React + Tailwind + Shadcn UI di /app/frontend
+- Auth: JWT bearer token, password hashed via bcrypt
+- File uploads via GridFS
 
-## Frontend (new)
-- `/master` — MasterDataPage (filter, edit, delete, OUT button per row).
-- `/master/import` — 3-step Excel import wizard, parses `Sample Master part Gudang Assy body 2026` Excel format (NO.REFF, NAME OF PART slash-separated, LOCATION, Min, multi-period Stock).
-- `/master/:id/movements` — IN/OUT history timeline with IN↗ + OUT↘ icons + qty deltas.
-- **Dashboard upgraded**: 4 new Stock Monitoring stat cards + red "Critical Parts — Order Immediately" table when any exist.
-- **Sidebar**: new "Master Data" item.
+## What's Implemented (latest first)
 
-## Indexes (added)
-- `master_parts: (line_area, part_name)`, `(line_area, level_part)`, `part_name`
-- `movements: (master_part_id, date desc)`, `(line_area, type, date desc)`
+### Major Revision (Iteration 3) — Feb 2026
+- **Dashboard redesign** (/dashboard): Filter Line/Bulan/Tahun + Procurement This Month cards (Total, AFA, PO, Datang) + Stock Action Required cards (Critical Part w/ View All popup, Low Stock/Need Order, Need Update).
+- **Critical Parts Modal** popup table (Name, Type, Maker, Line, Location, Stock, Status).
+- **Master Data** (/master): Pagination 20/40/80/100 (default 20). 3 search fields (Name, Type, Maker). Filter Line, Level, Status (Aman/Low/Critical/Need Update). **Inline editable Location** (icon MapPin). Removed Warning column.
+- **Request Form** (/parts/new): Autocomplete Name/Type/Maker terhubung ke Master Data. Cascade filter. "Part not found" dialog → Tambahkan ke Master / Tetap simpan / Batal.
+- **Delete Request** dengan reverse stock: DeleteDialog menampilkan stock impact via GET /spare-parts/{id}/stock-impact. Saat confirm → backend DELETE + create OUT adjustment + decrement master.current_stock. Histori movement preserved.
+- **IN / OUT History page** (/history): 2 ResumeCard (IN/OUT) dengan Total Transaksi & Total Quantity per bulan/line.
+- **Sidebar refresh**: Removed "Data Sparepart"; added "IN / OUT History".
+- **Stock action logic**:
+  - Critical + stock 0 → "ORDER SEKARANG!!!"
+  - Substitusi + stock 0 → "CHECK SUBSTITUTE"
+  - Stock + stock 0 → "MONITOR"
+  - cs=null → "NEED UPDATE"; cs<2 → "LOW STOCK"; else "AMAN"
+- **Auto-IN on Datang**: PATCH /spare-parts/{id}/datang trigger _try_auto_in() saat datang_date+datang_no diisi.
 
-## Backlog (P1+)
-- Movement monthly report UI page (backend endpoint exists).
-- Stock filter applied as URL query (currently in-component state).
-- Critical-parts pulsing alert on dashboard cards.
-- Bulk Excel import for procurement legacy data (separate Excel from master).
+### Iteration 2 — Master Data import + IN/OUT
+- Import Excel (xlsx) ke Master Data
+- Manual OUT movements
+- Movement monthly report endpoint
 
-## Next Tasks
-1. Build dedicated Stock Monitor page using `/api/reports/movement-monthly` with IN/OUT charts.
-2. Filter critical-list by line on the dashboard card.
-3. Mobile responsive drawer.
+### Iteration 1 — Core flows
+- Auth (NIK+password JWT)
+- 7 LINE_AREAS (Pressing, Welding, Painting, Injection, Seat, Assembling & FI)
+- CRUD spare parts dengan stages
+- File uploads (foto part, ttd) + signature paste
+
+## Backlog
+- P1: Export Excel/PDF dari Master Data & Monthly Report dengan formatting
+- P1: Move /dashboard/summary aggregation ke MongoDB $facet (saat data > 5000 rows)
+- P2: Split server.py jadi modules (auth, parts, master, movements, dashboard)
+- P2: Master Data status filter di backend (saat ini client-side after pagination)
+- P2: Push notifications saat ada Critical Part baru
