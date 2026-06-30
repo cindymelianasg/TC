@@ -1,0 +1,44 @@
+{
+  "summary": "SMART-TC iteration 3 (Major Revision) — Backend: 15/16 tests pass for /dashboard/summary, /master-parts-search/lookup (q + cascading field), /spare-parts/{id}/stock-impact (no-IN branch), /stock/summary critical_list, /movements, /reports/movement-monthly, master-parts pagination (20/40/80/100). CRITICAL FAILURE: auto-IN helper `_try_auto_in` is defined at server.py line 906 but is NEVER CALLED from update_datang() — this breaks the entire stock IN/OUT lifecycle, stock-impact, and delete-reverse-OUT chain. Frontend: All UI checks pass — sidebar (7 items, no 'Data Sparepart'), Dashboard procurement+stock sections + Critical 'View All' modal, Master Data (pagination 20/40/80/100, 3 search fields, status filter options, NO Warning column, inline location edit, /database redirects to /area), /history renders, /parts/new autocomplete on Name returns master suggestions.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "PATCH /api/spare-parts/{id}/datang", "issue": "Auto-IN movement NEVER created. `_try_auto_in()` is defined at server.py:906 but is never invoked from `update_datang()` (or `_update_stage`). Consequences: (1) master_part.current_stock not incremented on Datang, (2) /spare-parts/{id}/stock-impact always returns has_in=False, (3) DELETE /spare-parts/{id} 'reverse OUT' branch can never execute since no IN exists. Verified by test_stock_impact_and_delete_reverse_flow — created master(stock=10) + matching spare-part(qty=3) + walked stages to DATANG; expected master.current_stock=13, got 10. Fix: in update_datang() (or end of _update_stage when stage=='DATANG' and merged.datang_date+datang_no set), call `await _try_auto_in(updated, user)`.", "priority": "CRITICAL"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Delete with reverse stock", "issue": "UI 'Lanjutkan & Hapus' will work mechanically, but because backend never created the IN movement, the DeleteDialog's stock-impact call will always return has_in=false (no warning banner shown). Once backend auto-IN is wired, this flow will function end-to-end.", "affected_selectors": ["detail-delete-btn","delete-dialog-impact","delete-dialog-confirm"]}
+    ],
+    "design_issues": [
+      {"screen": "Login redirect", "issues": ["Login redirects directly to /dashboard (not /area as stated in review request). This is actually a sensible default and matches the new sidebar — recommend updating the spec to /dashboard."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_tc_v3.py",
+    "/app/test_reports/pytest/smart_tc_v3_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Wire `_try_auto_in` into `update_datang` (or `_update_stage` post-update when stage=='DATANG' and datang_date+datang_no present). Without this, the entire IN/OUT history, stock-impact, and delete-reverse-OUT contract is broken.",
+    "Optional: update review-spec to note login redirects to /dashboard (matches new sidebar item order)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1391 lines — should be split into modules (auth, spare_parts, master_parts, movements, dashboard).",
+    "Master Data status filter is applied client-side AFTER backend pagination (line 1064-1065). This means when status filter is active, the returned page can have far fewer items than page_size, and `total` will overcount. Frontend pagination math will be off.",
+    "DELETE /spare-parts/{id} reverse-OUT logic itself is correct (creates adjustment movement, decrements master.current_stock, preserves IN history). Only blocked by missing auto-IN trigger.",
+    "GET /master-parts-search/lookup correctly uses ^q regex for prefix match on field-mode and contains-regex for q-mode — autocomplete UX is consistent.",
+    "/dashboard/summary loads up to 100000 parts/month and computes status in Python — fine at current scale but should move to MongoDB $facet aggregation if part count grows much past current 1000.",
+    "/stock/summary critical_list returns up to 200 items — adequate for popup; capped properly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_smart_tc_v3.py (new)"
+  ],
+  "success_rate": {"backend": "94% (15/16)", "frontend": "100% on tested flows"},
+  "test_credentials": "Creator NIK 32521 / 123456 (Cindy). Requestor NIK 19376 / 123456 (Heri). From /app/memory/test_credentials.md — verified usable.",
+  "seed_data_creation": "All TEST_ prefixed spare_parts and master_parts created during pytest were cleaned up by autouse fixture. One master-part TEST_REV_* from the failing test may remain (master cleanup runs but the test itself fails before its inline delete) — minor DB residue, can be ignored or cleaned by creator.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_smart_tc_v3.py -v` (~5s, 16 tests). After fixing _try_auto_in invocation, the failing test should pass. Frontend testids inventory: dash-section-procurement, dash-section-stock, critical-modal, critical-modal-table, critical-modal-close, master-table, master-page-size, master-q-name/type/maker, master-filter-line/level/status, master-page-first/prev/next/last, master-loc-edit-{i}, master-loc-input-{i}, master-loc-save-{i}, hist-table, form-nama (autocomplete), form-not-found-dialog, nf-cancel/continue/add-master, detail-delete-btn, detail-delete-dialog, delete-dialog-impact, delete-dialog-confirm, delete-dialog-cancel. Login redirects to /dashboard not /area.",
+  "rca_of_the_critical_issue": "Root cause: refactor introduced `_try_auto_in(part, user)` (server.py line 906) intended to be called when a Datang stage is recorded, but the call site was never added. `grep -n '_try_auto_in' server.py` returns only the definition line. Reproduction: 1) POST /master-parts {part_name,type,maker,line_area,stock_awal:10}. 2) POST /spare-parts with identical name/type/maker/line_area and qty_order=3. 3) PATCH /spare-parts/{id}/datang with datang_date+datang_no. 4) GET /master-parts/{mid} -> current_stock still 10 (expected 13). 5) GET /spare-parts/{id}/stock-impact -> {has_in:false}. Mitigation: at the end of `update_datang` (server.py line 728-731), after `_update_stage` returns, fetch the updated part and call `await _try_auto_in(updated_doc, user)`; or add to `_update_stage` a final `if stage=='DATANG' and merged.get('datang_date') and merged.get('datang_no'): await _try_auto_in(merged, user)`."
+}

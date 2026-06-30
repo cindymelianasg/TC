@@ -1,13 +1,13 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Database, FileBarChart, Users, Settings, LogOut, List, Package } from "lucide-react";
+import { LayoutDashboard, Database, FileBarChart, Users, Settings, LogOut, Package, ArrowDownUp } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import Logo from "@/components/Logo";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testId: "nav-dashboard" },
   { to: "/area", label: "Line / Area", icon: Database, testId: "nav-area" },
-  { to: "/database", label: "Data Sparepart", icon: List, testId: "nav-database" },
   { to: "/master", label: "Master Data", icon: Package, testId: "nav-master" },
+  { to: "/history", label: "IN / OUT History", icon: ArrowDownUp, testId: "nav-history" },
   { to: "/reports", label: "Laporan Bulanan", icon: FileBarChart, testId: "nav-reports" },
   { to: "/users", label: "User Management", icon: Users, testId: "nav-users" },
   { to: "/settings", label: "Setting", icon: Settings, testId: "nav-settings" },

@@ -1,6 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Save, RotateCcw, AlertCircle } from "lucide-react";
+import { ArrowLeft, Save, RotateCcw, AlertCircle, Search, Database, Plus } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import FileUploader from "@/components/FileUploader";
 import SignaturePaste from "@/components/SignaturePaste";
@@ -8,6 +8,7 @@ import { api, formatApiError } from "@/lib/api";
 import { LINE_AREAS } from "@/constants/lines";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -54,10 +55,27 @@ export default function SparePartFormPage() {
   });
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
+  const [notFoundOpen, setNotFoundOpen] = useState(false);
+  const [matched, setMatched] = useState(null); // matched master part
 
   const update = (k, v) => {
     setForm((f) => ({ ...f, [k]: v }));
     if (errors[k]) setErrors((e) => ({ ...e, [k]: undefined }));
+    if (["nama_barang", "type", "maker"].includes(k)) setMatched(null);
+  };
+
+  // When user selects a master part, populate dependent fields & lock cascade
+  const applyMasterPart = (m) => {
+    setMatched(m);
+    setForm((f) => ({
+      ...f,
+      nama_barang: m.part_name || f.nama_barang,
+      type: m.type || f.type,
+      maker: m.maker || f.maker,
+      line_area: m.line_area || f.line_area,
+      level_part: m.level_part || f.level_part,
+    }));
+    setErrors({});
   };
 
   const validate = () => {
@@ -74,12 +92,31 @@ export default function SparePartFormPage() {
     return e;
   };
 
+  // Before submit, verify part exists in Master Data
+  const verifyMasterPart = async () => {
+    try {
+      const { data } = await api.get("/master-parts-search/lookup", {
+        params: { part_name: form.nama_barang, type: form.type, maker: form.maker, line: form.line_area, limit: 1 },
+      });
+      const items = data.items || [];
+      if (items.length === 0) {
+        // Try fuzzy
+        const fuzzy = await api.get("/master-parts-search/lookup", {
+          params: { q: form.nama_barang, limit: 5 },
+        });
+        return { found: false, suggestions: fuzzy.data.items || [] };
+      }
+      return { found: true, master: items[0] };
+    } catch {
+      return { found: true, master: null }; // fall open
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     const v = validate();
     setErrors(v);
     if (Object.keys(v).length > 0) {
-      // Scroll to first invalid
       const firstKey = REQUIRED_FIELDS.find((f) => v[f.key])?.key || Object.keys(v)[0];
       const el = fieldRefs.current[firstKey];
       if (el && el.scrollIntoView) {
@@ -89,6 +126,16 @@ export default function SparePartFormPage() {
       toast.error("Lengkapi field yang ditandai merah");
       return;
     }
+    // Master verification
+    const check = await verifyMasterPart();
+    if (!check.found) {
+      setNotFoundOpen(true);
+      return;
+    }
+    doSave();
+  };
+
+  const doSave = async () => {
     setBusy(true);
     try {
       const payload = {
@@ -97,7 +144,7 @@ export default function SparePartFormPage() {
         lampiran_date: form.lampiran_date || null,
       };
       const { data } = await api.post("/spare-parts", payload);
-      toast.success("Data berhasil disimpan");
+      toast.success("Request berhasil disimpan");
       nav(`/parts/${data.id}`, { replace: true });
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail) || "Gagal menyimpan");
@@ -115,6 +162,7 @@ export default function SparePartFormPage() {
       lampiran_status: "BELUM", lampiran_date: "", lampiran_note: "",
       foto_part: [], ttd_requestor: null, ttd_approval: null,
     });
+    setMatched(null);
     setErrors({});
   };
 
@@ -131,13 +179,24 @@ export default function SparePartFormPage() {
         </button>
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Form Request Spare Part</h1>
-          <p className="text-sm text-slate-500">Lengkapi semua field yang ditandai <span className="text-red-500">*</span>.</p>
+          <p className="text-sm text-slate-500">Ketik Name / Type / Maker — terhubung Master Data.</p>
         </div>
       </div>
 
       <form ref={formRef} onSubmit={submit} className="grid grid-cols-1 lg:grid-cols-3 gap-6" noValidate>
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4">
-          <SectionTitle title="Data Request" />
+          <SectionTitle title="Data Request" subtitle="Lookup Master Data otomatis" />
+
+          {matched && (
+            <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-800" data-testid="form-master-match">
+              <Database className="w-4 h-4 mt-0.5" />
+              <div className="flex-1">
+                <div className="font-semibold">Master Part terhubung</div>
+                <div className="text-xs">{matched.part_name} {matched.type ? `· ${matched.type}` : ""} {matched.maker ? `· ${matched.maker}` : ""} · {matched.line_area}</div>
+              </div>
+              <button type="button" onClick={() => setMatched(null)} className="text-xs underline">Lepas</button>
+            </div>
+          )}
 
           <Field label="Line / Area" required error={errors.line_area}>
             <select
@@ -154,22 +213,46 @@ export default function SparePartFormPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Field label="Nama Barang" required error={errors.nama_barang}>
-              <input
-                ref={(el) => (fieldRefs.current.nama_barang = el)}
-                type="text" value={form.nama_barang} onChange={(e) => update("nama_barang", e.target.value)}
-                placeholder="contoh: BEARING C" className={inputCls("nama_barang")} data-testid="form-nama" />
+              <MasterAutocomplete
+                value={form.nama_barang}
+                onChange={(v) => update("nama_barang", v)}
+                onSelect={applyMasterPart}
+                field="part_name"
+                line={form.line_area}
+                otherFilters={{ type: form.type, maker: form.maker }}
+                placeholder="contoh: BEARING C"
+                cls={inputCls("nama_barang")}
+                inputRef={(el) => (fieldRefs.current.nama_barang = el)}
+                testId="form-nama"
+              />
             </Field>
             <Field label="Type" required error={errors.type}>
-              <input
-                ref={(el) => (fieldRefs.current.type = el)}
-                type="text" value={form.type} onChange={(e) => update("type", e.target.value)}
-                placeholder="contoh: BALL BEARING 6205" className={inputCls("type")} data-testid="form-type" />
+              <MasterAutocomplete
+                value={form.type}
+                onChange={(v) => update("type", v)}
+                onSelect={applyMasterPart}
+                field="type"
+                line={form.line_area}
+                otherFilters={{ part_name: form.nama_barang, maker: form.maker }}
+                placeholder="contoh: BALL BEARING 6205"
+                cls={inputCls("type")}
+                inputRef={(el) => (fieldRefs.current.type = el)}
+                testId="form-type"
+              />
             </Field>
             <Field label="Maker" required error={errors.maker}>
-              <input
-                ref={(el) => (fieldRefs.current.maker = el)}
-                type="text" value={form.maker} onChange={(e) => update("maker", e.target.value)}
-                placeholder="contoh: SKF" className={inputCls("maker")} data-testid="form-maker" />
+              <MasterAutocomplete
+                value={form.maker}
+                onChange={(v) => update("maker", v)}
+                onSelect={applyMasterPart}
+                field="maker"
+                line={form.line_area}
+                otherFilters={{ part_name: form.nama_barang, type: form.type }}
+                placeholder="contoh: SKF"
+                cls={inputCls("maker")}
+                inputRef={(el) => (fieldRefs.current.maker = el)}
+                testId="form-maker"
+              />
             </Field>
             <Field label="Part Mesin" required error={errors.part_mesin}>
               <input
@@ -294,6 +377,20 @@ export default function SparePartFormPage() {
           </div>
         </div>
       </form>
+
+      <NotFoundDialog
+        open={notFoundOpen}
+        onClose={() => setNotFoundOpen(false)}
+        onAddToMaster={() => {
+          setNotFoundOpen(false);
+          // Pre-fill master via URL state — open Master with intent to add
+          nav(`/master?add=1&name=${encodeURIComponent(form.nama_barang)}&type=${encodeURIComponent(form.type)}&maker=${encodeURIComponent(form.maker)}&line=${encodeURIComponent(form.line_area)}&level=${encodeURIComponent(form.level_part)}`);
+        }}
+        onContinue={() => { setNotFoundOpen(false); doSave(); }}
+        partName={form.nama_barang}
+        type={form.type}
+        maker={form.maker}
+      />
     </AppShell>
   );
 }
@@ -316,5 +413,97 @@ function Field({ label, children, required, error }) {
       {children}
       {error && <div className="text-xs text-red-600 mt-1" data-testid={`error-${label.toLowerCase().replace(/\s+/g, "-")}`}>{error}</div>}
     </div>
+  );
+}
+
+function MasterAutocomplete({ value, onChange, onSelect, field, line, otherFilters, placeholder, cls, inputRef, testId }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchValues = useCallback(async (q) => {
+    if (!q || q.length < 1) { setItems([]); return; }
+    setLoading(true);
+    try {
+      const params = { ...otherFilters };
+      params[field] = q;
+      if (line) params.line = line;
+      const { data } = await api.get("/master-parts-search/lookup", { params });
+      setItems(data.items || []);
+    } catch { setItems([]); }
+    finally { setLoading(false); }
+  }, [field, line, otherFilters]);
+
+  // Debounced fetch
+  useEffect(() => {
+    const t = setTimeout(() => { if (open) fetchValues(value); }, 200);
+    return () => clearTimeout(t);
+  }, [value, open, fetchValues]);
+
+  const display = (m) => `${m.part_name}${m.type ? " · " + m.type : ""}${m.maker ? " · " + m.maker : ""}`;
+
+  return (
+    <div className="relative">
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className={cls}
+        data-testid={testId}
+        autoComplete="off"
+      />
+      <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+      {open && value && items.length > 0 && (
+        <div className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-auto" data-testid={`${testId}-list`}>
+          {loading && <div className="px-3 py-2 text-xs text-slate-400">Mencari...</div>}
+          {items.slice(0, 10).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); onSelect(m); setOpen(false); }}
+              className="w-full text-left px-3 py-2 hover:bg-blue-50 text-sm border-b border-slate-100 last:border-0"
+              data-testid={`${testId}-opt-${m.id}`}
+            >
+              <div className="font-medium text-slate-900 truncate">{display(m)}</div>
+              <div className="text-[11px] text-slate-500">{m.line_area} · Stock {m.current_stock ?? "—"} · {m.level_part}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotFoundDialog({ open, onClose, onAddToMaster, onContinue, partName, type, maker }) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md" data-testid="form-not-found-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-amber-700">
+            <AlertCircle className="w-5 h-5" /> Part belum terdaftar di Master Data
+          </DialogTitle>
+        </DialogHeader>
+        <div className="text-sm text-slate-700 space-y-2">
+          <p>Part berikut tidak ditemukan di Master Data:</p>
+          <div className="bg-slate-50 rounded-lg p-3 text-xs space-y-0.5">
+            <div><strong>Name:</strong> {partName || "-"}</div>
+            <div><strong>Type:</strong> {type || "-"}</div>
+            <div><strong>Maker:</strong> {maker || "-"}</div>
+          </div>
+          <p>Apakah Anda ingin menambahkan ke Master Data terlebih dahulu, atau tetap simpan request ini?</p>
+        </div>
+        <DialogFooter className="flex-col sm:flex-row gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm" data-testid="nf-cancel">Batal</button>
+          <button onClick={onContinue} className="px-4 py-2 rounded-lg border border-slate-300 text-sm hover:bg-slate-50" data-testid="nf-continue">Tetap simpan request</button>
+          <button onClick={onAddToMaster} className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center justify-center gap-1.5" data-testid="nf-add-master">
+            <Plus className="w-4 h-4" /> Tambahkan ke Master
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

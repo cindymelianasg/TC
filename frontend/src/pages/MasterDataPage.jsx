@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, AlertTriangle, AlertOctagon, History } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, MapPin, Check } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api, formatApiError } from "@/lib/api";
 import { LINE_AREAS } from "@/constants/lines";
@@ -8,63 +8,138 @@ import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
-const STATUSES = ["OK", "BELOW MIN", "NO STOCK", "NEED UPDATE"];
 const LEVELS = ["Critical", "Substitusi", "Stock"];
-
-const STATUS_STYLES = {
-  OK: "bg-emerald-100 text-emerald-700 border-emerald-200",
-  "BELOW MIN": "bg-orange-100 text-orange-700 border-orange-200",
-  "NO STOCK": "bg-red-100 text-red-700 border-red-200",
-  "NEED UPDATE": "bg-slate-100 text-slate-700 border-slate-200",
-};
+const PAGE_SIZE_OPTIONS = [20, 40, 80, 100];
 
 const LEVEL_STYLES = {
-  Critical: "bg-red-100 text-red-700 border-red-200",
-  Substitusi: "bg-amber-100 text-amber-800 border-amber-200",
-  Stock: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  Critical: "bg-red-50 text-red-700 border-red-200",
+  Substitusi: "bg-amber-50 text-amber-700 border-amber-200",
+  Stock: "bg-emerald-50 text-emerald-700 border-emerald-200",
 };
+
+// status label that backend produces via `action`
+const ACTION_STYLES = {
+  "AMAN": "bg-emerald-100 text-emerald-700 border-emerald-200",
+  "LOW STOCK": "bg-yellow-100 text-yellow-800 border-yellow-200",
+  "ORDER SEKARANG!!!": "bg-red-100 text-red-700 border-red-200",
+  "CHECK SUBSTITUTE": "bg-amber-100 text-amber-800 border-amber-200",
+  "MONITOR": "bg-slate-100 text-slate-700 border-slate-200",
+  "NEED UPDATE": "bg-slate-100 text-slate-500 border-slate-200",
+};
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "SEMUA", label: "Semua" },
+  { value: "AMAN", label: "Aman" },
+  { value: "LOW", label: "Low / Need Order" },
+  { value: "CRITICAL", label: "Order Sekarang" },
+  { value: "NEED UPDATE", label: "Need Update" },
+];
+
+function matchStatusFilter(action, filter) {
+  if (filter === "SEMUA") return true;
+  if (filter === "AMAN") return action === "AMAN";
+  if (filter === "CRITICAL") return action === "ORDER SEKARANG!!!";
+  if (filter === "NEED UPDATE") return action === "NEED UPDATE";
+  if (filter === "LOW") return ["LOW STOCK", "CHECK SUBSTITUTE", "MONITOR"].includes(action);
+  return true;
+}
 
 export default function MasterDataPage() {
   const nav = useNavigate();
   const { user } = useAuth();
   const isCreator = user?.role === "creator";
+  const [searchParams, setSearchParams] = useSearchParams();
   const [line, setLine] = useState("SEMUA");
   const [levelPart, setLevelPart] = useState("SEMUA");
-  const [status, setStatus] = useState("SEMUA");
-  const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState(searchParams.get("status") || "SEMUA");
+  const [partNameQ, setPartNameQ] = useState("");
+  const [typeQ, setTypeQ] = useState("");
+  const [makerQ, setMakerQ] = useState("");
   const [page, setPage] = useState(1);
-  const pageSize = 20;
+  const [pageSize, setPageSize] = useState(20);
   const [data, setData] = useState({ items: [], total: 0 });
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [editPart, setEditPart] = useState(null);
+  const [prefilledNew, setPrefilledNew] = useState(null);
   const [outOpen, setOutOpen] = useState(false);
   const [outPart, setOutPart] = useState(null);
+  const [locationEditId, setLocationEditId] = useState(null);
+  const [locationDraft, setLocationDraft] = useState("");
+
+  // Auto-open Add dialog if redirected from Request Form
+  useEffect(() => {
+    if (searchParams.get("add") === "1" && isCreator) {
+      setPrefilledNew({
+        part_name: searchParams.get("name") || "",
+        type: searchParams.get("type") || "",
+        maker: searchParams.get("maker") || "",
+        line_area: searchParams.get("line") || "ASSEMBLING & FI",
+        level_part: searchParams.get("level") || "Stock",
+        current_stock: "",
+        minimum_stock: 0,
+        location: "",
+        reff: "",
+      });
+      setEditPart(null);
+      setEditOpen(true);
+      // Strip query to avoid re-opening on refresh
+      const next = new URLSearchParams(searchParams);
+      next.delete("add"); next.delete("name"); next.delete("type"); next.delete("maker"); next.delete("line"); next.delete("level");
+      setSearchParams(next, { replace: true });
+    }
+  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
+      // We over-fetch when status filter is client-side (LOW/AMAN/etc) since backend currently uses
+      // legacy stock_status names. Simplest: rely on backend pagination but skip status filter param.
       const params = { page, page_size: pageSize };
       if (line !== "SEMUA") params.line = line;
       if (levelPart !== "SEMUA") params.level_part = levelPart;
-      if (status !== "SEMUA") params.status = status;
-      if (q) params.q = q;
+      if (partNameQ) params.q = partNameQ;
+      // Type / Maker handled via combined q if name not present
+      if (!partNameQ && (typeQ || makerQ)) params.q = typeQ || makerQ;
       const { data } = await api.get("/master-parts", { params });
-      setData(data);
+      // Apply client-side status filter on the page slice (best effort; user can narrow with other filters)
+      const filtered = data.items.filter((m) => matchStatusFilter(m.action, statusFilter));
+      // Also apply client-side type/maker if both name and type/maker specified
+      const finalItems = filtered.filter((m) => {
+        if (typeQ && !(m.type || "").toLowerCase().includes(typeQ.toLowerCase())) return false;
+        if (makerQ && !(m.maker || "").toLowerCase().includes(makerQ.toLowerCase())) return false;
+        return true;
+      });
+      setData({ items: finalItems, total: data.total });
     } finally {
       setLoading(false);
     }
-  }, [line, levelPart, status, q, page]);
+  }, [line, levelPart, statusFilter, partNameQ, typeQ, makerQ, page, pageSize]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { setPage(1); }, [line, levelPart, statusFilter, partNameQ, typeQ, makerQ, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / pageSize));
 
   const onDelete = async (m) => {
-    if (!window.confirm(`Hapus "${m.part_name}"?`)) return;
+    if (!window.confirm(`Hapus "${m.part_name}"? Semua riwayat IN/OUT akan ikut terhapus.`)) return;
     try {
       await api.delete(`/master-parts/${m.id}`);
       toast.success("Master part dihapus");
+      fetchData();
+    } catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
+  };
+
+  const beginEditLocation = (m) => {
+    setLocationEditId(m.id);
+    setLocationDraft(m.location || "");
+  };
+
+  const saveLocation = async (m) => {
+    try {
+      await api.put(`/master-parts/${m.id}`, { location: locationDraft });
+      toast.success("Lokasi diperbarui");
+      setLocationEditId(null);
       fetchData();
     } catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
   };
@@ -74,7 +149,7 @@ export default function MasterDataPage() {
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5 animate-fade-up">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Master Data Spare Part</h1>
-          <p className="text-sm text-slate-500">Monitoring stock & klasifikasi part per line.</p>
+          <p className="text-sm text-slate-500">Klasifikasi part & monitoring stock per line.</p>
         </div>
         <div className="flex items-center gap-2">
           {isCreator && (
@@ -83,147 +158,197 @@ export default function MasterDataPage() {
                 <Upload className="w-4 h-4" /> Import Excel
               </button>
               <button onClick={() => { setEditPart(null); setEditOpen(true); }} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="master-add-btn">
-                <Plus className="w-4 h-4" /> Tambah
+                <Plus className="w-4 h-4" /> Tambah Part
               </button>
             </>
           )}
         </div>
       </div>
 
+      {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Line / Area</label>
-            <select value={line} onChange={(e) => { setPage(1); setLine(e.target.value); }} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" data-testid="master-filter-line">
-              <option value="SEMUA">Semua</option>
-              {LINE_AREAS.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Level</label>
-            <select value={levelPart} onChange={(e) => { setPage(1); setLevelPart(e.target.value); }} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" data-testid="master-filter-level">
-              <option value="SEMUA">Semua</option>
-              {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Stock Status</label>
-            <select value={status} onChange={(e) => { setPage(1); setStatus(e.target.value); }} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" data-testid="master-filter-status">
-              <option value="SEMUA">Semua</option>
-              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <form onSubmit={(e) => { e.preventDefault(); setPage(1); fetchData(); }} className="relative col-span-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1 block">Cari</label>
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-[34px]" />
-            <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Part name, type, maker, reff..." data-testid="master-filter-search"
-              className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm bg-white" />
-          </form>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <SearchField label="Name Part" value={partNameQ} onChange={setPartNameQ} placeholder="Cari nama…" testId="master-q-name" />
+          <SearchField label="Type" value={typeQ} onChange={setTypeQ} placeholder="Cari type…" testId="master-q-type" />
+          <SearchField label="Maker" value={makerQ} onChange={setMakerQ} placeholder="Cari maker…" testId="master-q-maker" />
+          <SelectFilter label="Line / Area" value={line} onChange={setLine} testId="master-filter-line">
+            <option value="SEMUA">Semua</option>
+            {LINE_AREAS.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
+          </SelectFilter>
+          <SelectFilter label="Level Part" value={levelPart} onChange={setLevelPart} testId="master-filter-level">
+            <option value="SEMUA">Semua</option>
+            {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+          </SelectFilter>
+          <SelectFilter label="Stock Status" value={statusFilter} onChange={setStatusFilter} testId="master-filter-status">
+            {STATUS_FILTER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </SelectFilter>
         </div>
       </div>
 
+      {/* Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" data-testid="master-table">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
               <tr>
                 <th className="px-3 py-3 text-left font-medium">No</th>
-                <th className="px-3 py-3 text-left font-medium">Part Name</th>
+                <th className="px-3 py-3 text-left font-medium">Name Part</th>
                 <th className="px-3 py-3 text-left font-medium">Type</th>
                 <th className="px-3 py-3 text-left font-medium">Maker</th>
                 <th className="px-3 py-3 text-left font-medium">Line / Area</th>
-                <th className="px-3 py-3 text-left font-medium">Stock</th>
-                <th className="px-3 py-3 text-left font-medium">Min</th>
-                <th className="px-3 py-3 text-left font-medium">Level</th>
-                <th className="px-3 py-3 text-left font-medium">Stock Status</th>
-                <th className="px-3 py-3 text-left font-medium">Warning</th>
+                <th className="px-3 py-3 text-left font-medium">Location</th>
+                <th className="px-3 py-3 text-left font-medium">Level Part</th>
+                <th className="px-3 py-3 text-left font-medium">Current Stock</th>
+                <th className="px-3 py-3 text-left font-medium">Status</th>
                 <th className="px-3 py-3 text-right font-medium">Aksi</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={11} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
+              {loading && <tr><td colSpan={10} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
               {!loading && data.items.length === 0 && (
-                <tr><td colSpan={11} className="text-center py-10 text-slate-400">Tidak ada data. Import Excel atau tambah manual.</td></tr>
+                <tr><td colSpan={10} className="text-center py-10 text-slate-400">Tidak ada data sesuai filter.</td></tr>
               )}
-              {!loading && data.items.map((m, i) => (
-                <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50" data-testid={`master-row-${i}`}>
-                  <td className="px-3 py-3 text-slate-700">{(page - 1) * pageSize + i + 1}</td>
-                  <td className="px-3 py-3 text-slate-900 font-medium max-w-[300px]">
-                    <div className="truncate">{m.part_name}</div>
-                    {m.reff && <div className="text-xs text-slate-400">REFF {m.reff} {m.location && `· ${m.location}`}</div>}
-                  </td>
-                  <td className="px-3 py-3 text-slate-700">{m.type || "-"}</td>
-                  <td className="px-3 py-3 text-slate-700">{m.maker || "-"}</td>
-                  <td className="px-3 py-3 text-slate-700">{m.line_area}</td>
-                  <td className={`px-3 py-3 font-semibold ${m.current_stock === null ? "text-slate-400" : m.current_stock === 0 ? "text-red-600" : "text-slate-900"}`}>
-                    {m.current_stock === null ? "—" : m.current_stock}
-                  </td>
-                  <td className="px-3 py-3 text-slate-700">{m.minimum_stock ?? 0}</td>
-                  <td className="px-3 py-3">
-                    <span className={`status-pill ${LEVEL_STYLES[m.level_part]}`}>{m.level_part}</span>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={`status-pill ${STATUS_STYLES[m.stock_status]}`}>{m.stock_status}</span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {m.warning === "CRITICAL" && <span className="inline-flex items-center gap-1 text-red-600 text-xs font-semibold"><AlertOctagon className="w-3.5 h-3.5" /> Order Immediately</span>}
-                    {m.warning === "CHECK_SUBSTITUTE" && <span className="inline-flex items-center gap-1 text-yellow-700 text-xs font-semibold"><AlertTriangle className="w-3.5 h-3.5" /> Check Substitute</span>}
-                    {m.warning === "BELOW_MIN" && <span className="inline-flex items-center gap-1 text-orange-600 text-xs font-semibold"><AlertTriangle className="w-3.5 h-3.5" /> Below Min</span>}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => { setOutPart(m); setOutOpen(true); }} title="OUT" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-out-${i}`}>
-                        <ArrowDownToLine className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => nav(`/master/${m.id}/movements`)} title="Riwayat" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-history-${i}`}>
-                        <History className="w-4 h-4" />
-                      </button>
-                      {isCreator && (
-                        <>
-                          <button onClick={() => { setEditPart(m); setEditOpen(true); }} title="Edit" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-edit-${i}`}>
-                            <Pencil className="w-4 h-4" />
+              {!loading && data.items.map((m, i) => {
+                const isEditingLoc = locationEditId === m.id;
+                return (
+                  <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50" data-testid={`master-row-${i}`}>
+                    <td className="px-3 py-3 text-slate-700">{(page - 1) * pageSize + i + 1}</td>
+                    <td className="px-3 py-3 text-slate-900 font-medium max-w-[280px]">
+                      <div className="truncate">{m.part_name}</div>
+                      {m.reff && <div className="text-[11px] text-slate-400">REFF {m.reff}</div>}
+                    </td>
+                    <td className="px-3 py-3 text-slate-700 max-w-[200px] truncate">{m.type || "-"}</td>
+                    <td className="px-3 py-3 text-slate-700 max-w-[160px] truncate">{m.maker || "-"}</td>
+                    <td className="px-3 py-3 text-slate-700">{m.line_area}</td>
+                    <td className="px-3 py-3 text-slate-700">
+                      {isEditingLoc ? (
+                        <div className="flex items-center gap-1">
+                          <input value={locationDraft} onChange={(e) => setLocationDraft(e.target.value)}
+                            className="w-24 rounded border border-slate-300 px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500" data-testid={`master-loc-input-${i}`} />
+                          <button onClick={() => saveLocation(m)} className="p-1 rounded hover:bg-emerald-50 text-emerald-600" data-testid={`master-loc-save-${i}`}>
+                            <Check className="w-3.5 h-3.5" />
                           </button>
-                          <button onClick={() => onDelete(m)} title="Hapus" className="p-1.5 rounded hover:bg-red-50 text-red-600" data-testid={`master-delete-${i}`}>
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </>
+                        </div>
+                      ) : (
+                        <button onClick={() => beginEditLocation(m)} className="inline-flex items-center gap-1 text-left hover:text-blue-600" data-testid={`master-loc-edit-${i}`}>
+                          <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="text-xs">{m.location || "-"}</span>
+                        </button>
                       )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`status-pill ${LEVEL_STYLES[m.level_part]}`}>{m.level_part}</span>
+                    </td>
+                    <td className={`px-3 py-3 font-semibold tabular-nums ${m.current_stock === null ? "text-slate-400" : m.current_stock === 0 ? "text-red-600" : "text-slate-900"}`}>
+                      {m.current_stock === null ? "—" : m.current_stock}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`status-pill ${ACTION_STYLES[m.action] || "bg-slate-100 text-slate-600 border-slate-200"}`} data-testid={`master-status-${i}`}>{m.action}</span>
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => { setOutPart(m); setOutOpen(true); }} title="OUT" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-out-${i}`}>
+                          <ArrowDownToLine className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => nav(`/master/${m.id}/movements`)} title="Riwayat" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-history-${i}`}>
+                          <History className="w-4 h-4" />
+                        </button>
+                        {isCreator && (
+                          <>
+                            <button onClick={() => { setEditPart(m); setEditOpen(true); }} title="Edit" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-edit-${i}`}>
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => onDelete(m)} title="Hapus" className="p-1.5 rounded hover:bg-red-50 text-red-600" data-testid={`master-delete-${i}`}>
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 text-sm">
-          <div className="text-slate-500">Total: {data.total} part</div>
+
+        {/* Pagination */}
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-slate-200 text-sm">
+          <div className="flex items-center gap-3 text-slate-500">
+            <span>Total: <strong className="text-slate-700">{data.total}</strong> part</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs">Rows:</span>
+              <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value))} className="rounded-md border border-slate-300 px-2 py-1 text-xs bg-white" data-testid="master-page-size">
+                {PAGE_SIZE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          </div>
           <div className="flex items-center gap-1">
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1.5 rounded-md border border-slate-200 disabled:opacity-40" data-testid="master-page-prev">‹</button>
-            <span className="px-3 py-1.5 rounded-md bg-blue-600 text-white font-semibold">{page}</span>
-            <span className="text-slate-400">/ {totalPages}</span>
-            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1.5 rounded-md border border-slate-200 disabled:opacity-40" data-testid="master-page-next">›</button>
+            <button onClick={() => setPage(1)} disabled={page <= 1} className="px-2 py-1 rounded-md border border-slate-200 disabled:opacity-40 text-xs" data-testid="master-page-first">«</button>
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded-md border border-slate-200 disabled:opacity-40" data-testid="master-page-prev">‹</button>
+            <span className="px-3 py-1 rounded-md bg-blue-600 text-white font-semibold tabular-nums">{page}</span>
+            <span className="text-slate-400 tabular-nums">/ {totalPages}</span>
+            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded-md border border-slate-200 disabled:opacity-40" data-testid="master-page-next">›</button>
+            <button onClick={() => setPage(totalPages)} disabled={page >= totalPages} className="px-2 py-1 rounded-md border border-slate-200 disabled:opacity-40 text-xs" data-testid="master-page-last">»</button>
           </div>
         </div>
       </div>
 
-      <EditDialog open={editOpen} onClose={() => setEditOpen(false)} part={editPart} onSaved={() => { setEditOpen(false); fetchData(); }} />
+      <EditDialog open={editOpen} onClose={() => { setEditOpen(false); setPrefilledNew(null); }} part={editPart} prefill={prefilledNew} onSaved={() => { setEditOpen(false); setPrefilledNew(null); fetchData(); }} />
       <OutDialog open={outOpen} onClose={() => setOutOpen(false)} part={outPart} onSaved={() => { setOutOpen(false); fetchData(); }} />
     </AppShell>
   );
 }
 
-function EditDialog({ open, onClose, part, onSaved }) {
+function SearchField({ label, value, onChange, placeholder, testId }) {
+  return (
+    <div>
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">{label}</label>
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+        <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+          data-testid={testId}
+          className="w-full rounded-lg border border-slate-300 pl-8 pr-2 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+    </div>
+  );
+}
+
+function SelectFilter({ label, value, onChange, children, testId }) {
+  return (
+    <div>
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1 block">{label}</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500" data-testid={testId}>
+        {children}
+      </select>
+    </div>
+  );
+}
+
+function EditDialog({ open, onClose, part, prefill, onSaved }) {
   const isEdit = !!part;
   const [form, setForm] = useState({});
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setForm(part ? {
-      part_name: part.part_name || "", type: part.type || "", maker: part.maker || "", line_area: part.line_area || "",
-      current_stock: part.current_stock ?? "", minimum_stock: part.minimum_stock ?? 0, level_part: part.level_part || "Stock",
-      reff: part.reff || "", location: part.location || "",
-    } : { part_name: "", type: "", maker: "", line_area: "ASSEMBLING & FI", current_stock: "", minimum_stock: 0, level_part: "Stock", reff: "", location: "" });
-  }, [part, open]);
+    if (part) {
+      setForm({
+        part_name: part.part_name || "", type: part.type || "", maker: part.maker || "", line_area: part.line_area || "ASSEMBLING & FI",
+        current_stock: part.current_stock ?? "", minimum_stock: part.minimum_stock ?? 0, level_part: part.level_part || "Stock",
+        reff: part.reff || "", location: part.location || "",
+      });
+    } else if (prefill) {
+      setForm({
+        part_name: prefill.part_name || "", type: prefill.type || "", maker: prefill.maker || "",
+        line_area: prefill.line_area || "ASSEMBLING & FI",
+        current_stock: prefill.current_stock ?? "", minimum_stock: prefill.minimum_stock ?? 0,
+        level_part: prefill.level_part || "Stock",
+        reff: prefill.reff || "", location: prefill.location || "",
+      });
+    } else {
+      setForm({ part_name: "", type: "", maker: "", line_area: "ASSEMBLING & FI", current_stock: "", minimum_stock: 0, level_part: "Stock", reff: "", location: "" });
+    }
+  }, [part, prefill, open]);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -254,7 +379,8 @@ function EditDialog({ open, onClose, part, onSaved }) {
           <Input label="Current Stock (kosong = NEED UPDATE, 0 = NO STOCK)" type="number" value={form.current_stock} onChange={(v) => upd("current_stock", v)} testId="me-stock" />
           <Input label="Minimum Stock" type="number" value={form.minimum_stock} onChange={(v) => upd("minimum_stock", v)} testId="me-min" />
           <SelectField label="Level Part" value={form.level_part} onChange={(v) => upd("level_part", v)} options={LEVELS} testId="me-level" />
-          <Input label="REFF / Location" value={form.reff} onChange={(v) => upd("reff", v)} testId="me-reff" />
+          <Input label="Location" value={form.location} onChange={(v) => upd("location", v)} testId="me-location" />
+          <Input label="REFF" value={form.reff} onChange={(v) => upd("reff", v)} testId="me-reff" />
         </div>
         <DialogFooter>
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm">Batal</button>

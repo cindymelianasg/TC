@@ -742,17 +742,100 @@ async def update_stamp(part_id: str, payload: StampUpdate, user=Depends(get_curr
     updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     return part_with_status(updated)
 
+@api_router.get("/spare-parts/{part_id}/stock-impact")
+async def get_stock_impact(part_id: str, user=Depends(get_current_user)):
+    """Check whether this request already triggered an IN movement (affecting stock)."""
+    part = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
+    if not part:
+        raise HTTPException(404, "Part tidak ditemukan")
+    in_mv = await db.movements.find_one({"spare_part_id": part_id, "type": "IN"}, {"_id": 0})
+    if not in_mv:
+        return {"has_in": False}
+    master = await db.master_parts.find_one({"id": in_mv["master_part_id"]}, {"_id": 0}) if in_mv else None
+    return {
+        "has_in": True,
+        "in_quantity": in_mv["quantity"],
+        "in_date": in_mv["date"],
+        "master_part_id": in_mv["master_part_id"],
+        "master_part_name": (master or {}).get("part_name"),
+        "master_current_stock": (master or {}).get("current_stock"),
+    }
+
 @api_router.delete("/spare-parts/{part_id}")
 async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
-    require_creator(user)
-    res = await db.spare_parts.delete_one({"id": part_id})
-    if res.deleted_count == 0:
+    """Allowed for creator OR original requestor.
+    If an auto-IN movement was created earlier, a compensating OUT movement is appended
+    to revert stock. The original IN movement is preserved in history."""
+    part = await db.spare_parts.find_one({"id": part_id})
+    if not part:
         raise HTTPException(status_code=404, detail="Part tidak ditemukan")
-    return {"ok": True}
+    is_creator = user.get("role") == "creator"
+    is_requestor = part.get("requestor_id") == user["id"]
+    if not (is_creator or is_requestor):
+        raise HTTPException(status_code=403, detail="Hanya creator atau requestor asli yang dapat menghapus request ini")
+
+    # Reverse IN if exists
+    in_mv = await db.movements.find_one({"spare_part_id": part_id, "type": "IN"})
+    if in_mv:
+        master = await db.master_parts.find_one({"id": in_mv["master_part_id"]})
+        if master:
+            qty = int(in_mv.get("quantity") or 0)
+            adj = {
+                "id": str(uuid.uuid4()),
+                "master_part_id": in_mv["master_part_id"],
+                "spare_part_id": part_id,
+                "type": "OUT",
+                "date": now_iso()[:10],
+                "quantity": qty,
+                "line_area": master["line_area"],
+                "note": f"Reverse OUT — penghapusan request '{part.get('nama_barang')}' (No. Datang {part.get('datang_no') or '-'})",
+                "actor": user["name"],
+                "actor_nik": user["nik"],
+                "is_adjustment": True,
+                "created_at": now_iso(),
+            }
+            await db.movements.insert_one(adj)
+            new_stock = max(0, (master.get("current_stock") or 0) - qty)
+            await db.master_parts.update_one(
+                {"id": master["id"]},
+                {"$set": {
+                    "current_stock": new_stock,
+                    "updated_at": now_iso(),
+                    "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"Reverse OUT -{qty} (delete request)"},
+                }},
+            )
+
+    await db.spare_parts.delete_one({"id": part_id})
+    return {"ok": True, "reverse_applied": bool(in_mv)}
 
 # -------------------------------------------------------------------
 # Dashboard & Reports
 # -------------------------------------------------------------------
+@api_router.get("/dashboard/summary")
+async def dashboard_summary(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
+    """Aggregated procurement summary across all lines (or filtered by line)."""
+    now = datetime.now(timezone.utc)
+    if not month:
+        month = now.month
+    if not year:
+        year = now.year
+    m = f"{int(month):02d}"
+    query: Dict[str, Any] = {"order_tanggal": {"$regex": f"^{int(year)}-{m}"}}
+    if line and line.upper() != "SEMUA":
+        query["line_area"] = normalize_line(line)
+    parts = await db.spare_parts.find(query, {"_id": 0}).sort("order_tanggal", -1).to_list(100000)
+    enriched = [part_with_status(p) for p in parts]
+    summary = {
+        "total": len(enriched),
+        "request": sum(1 for p in enriched if p["status"] == "REQUEST"),
+        "penawaran": sum(1 for p in enriched if p["status"] == "PENAWARAN"),
+        "nego": sum(1 for p in enriched if p["status"] == "NEGO"),
+        "afa": sum(1 for p in enriched if p["status"] == "AFA PROCESS"),
+        "po": sum(1 for p in enriched if p["status"] == "PO PROCESS"),
+        "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
+    }
+    return {"line": line or "SEMUA", "month": month, "year": year, "summary": summary}
+
 @api_router.get("/dashboard/{line}")
 async def dashboard_line(line: str, month: int = None, year: int = None, user=Depends(get_current_user)):
     line_up = line.upper().replace("-", " ")
@@ -989,6 +1072,47 @@ async def get_master_part(mid: str, user=Depends(get_current_user)):
         raise HTTPException(404, "Master part tidak ditemukan")
     return master_with_status(m)
 
+@api_router.get("/master-parts-search/lookup")
+async def master_lookup(
+    q: Optional[str] = None,
+    field: Optional[str] = None,
+    part_name: Optional[str] = None,
+    type: Optional[str] = None,
+    maker: Optional[str] = None,
+    line: Optional[str] = None,
+    limit: int = 25,
+    user=Depends(get_current_user),
+):
+    """Autocomplete / cascading lookup for Request Form.
+    - field=part_name|type|maker: returns distinct values for that field, filtered by other params.
+    - else: returns matching master parts (filtered by all provided params).
+    """
+    base: Dict[str, Any] = {}
+    if line and line.upper() != "SEMUA":
+        base["line_area"] = normalize_line(line)
+    if part_name:
+        base["part_name"] = {"$regex": f"^{part_name}", "$options": "i"}
+    if type:
+        base["type"] = {"$regex": f"^{type}", "$options": "i"}
+    if maker:
+        base["maker"] = {"$regex": f"^{maker}", "$options": "i"}
+    if q:
+        base["$or"] = [
+            {"part_name": {"$regex": q, "$options": "i"}},
+            {"type": {"$regex": q, "$options": "i"}},
+            {"maker": {"$regex": q, "$options": "i"}},
+        ]
+
+    if field in ("part_name", "type", "maker"):
+        values = await db.master_parts.distinct(field, base)
+        values = [v for v in values if v]
+        values.sort(key=lambda x: str(x).lower())
+        return {"values": values[:limit]}
+
+    cursor = db.master_parts.find(base, {"_id": 0}).sort("part_name", 1).limit(limit)
+    items = await cursor.to_list(limit)
+    return {"items": [master_with_status(m) for m in items]}
+
 @api_router.post("/master-parts")
 async def create_master_part(payload: MasterPartCreate, user=Depends(get_current_user)):
     require_creator(user)
@@ -1204,7 +1328,8 @@ async def stock_summary(line: Optional[str] = None, user=Depends(get_current_use
     all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(100000)
     total = len(all_parts)
     critical_order = 0     # Level Critical AND stock == 0
-    need_order = 0         # LOW STOCK or NO STOCK (excl critical-order)
+    low_stock = 0          # current_stock > 0 but small (< 2) — display "LOW STOCK"
+    need_order = 0         # zero-stock non-critical: Substitusi -> CHECK SUBSTITUTE; Stock -> MONITOR
     need_update = 0        # cs is None
     critical_list = []
     for p in all_parts:
@@ -1212,16 +1337,19 @@ async def stock_summary(line: Optional[str] = None, user=Depends(get_current_use
         if action == "ORDER SEKARANG!!!":
             critical_order += 1
             critical_list.append({**p, "stock_status": compute_stock_status(p), "action": action})
-        elif action in ("LOW STOCK", "CHECK SUBSTITUTE", "MONITOR"):
+        elif action == "LOW STOCK":
+            low_stock += 1
+        elif action in ("CHECK SUBSTITUTE", "MONITOR"):
             need_order += 1
         elif action == "NEED UPDATE":
             need_update += 1
     return {
         "total": total,
         "critical": critical_order,
-        "need_order": need_order,
+        "low_stock": low_stock,
+        "need_order": need_order + low_stock,  # combined "Low Stock / Need Order" indicator
         "need_update": need_update,
-        "critical_list": critical_list[:50],
+        "critical_list": critical_list[:200],
     }
 
 @api_router.get("/reports/movement-monthly")

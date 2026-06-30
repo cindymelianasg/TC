@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, Pencil, FileText, ShoppingCart, Truck, FileCheck, FileSignature, Tag,
-  CheckCircle2, Circle, ZoomIn, History as HistoryIcon, AlertTriangle, Package, Settings as SettingsIcon, Activity,
+  CheckCircle2, Circle, ZoomIn, History as HistoryIcon, AlertTriangle, Package, Settings as SettingsIcon, Activity, Trash2,
 } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import StatusBadge from "@/components/StatusBadge";
@@ -59,6 +59,9 @@ export default function SparePartDetailPage() {
   const [editStageOpen, setEditStageOpen] = useState(false);
   const [editInfoOpen, setEditInfoOpen] = useState(false);
   const [lightbox, setLightbox] = useState({ open: false, fileId: null, filename: "" });
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [stockImpact, setStockImpact] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchPart = useCallback(async () => {
     setLoading(true);
@@ -74,18 +77,47 @@ export default function SparePartDetailPage() {
 
   useEffect(() => { fetchPart(); }, [fetchPart]);
 
+  const openDelete = async () => {
+    setStockImpact(null);
+    setDeleteOpen(true);
+    try {
+      const { data } = await api.get(`/spare-parts/${id}/stock-impact`);
+      setStockImpact(data);
+    } catch { setStockImpact({ has_in: false }); }
+  };
+
+  const doDelete = async () => {
+    setDeleting(true);
+    try {
+      await api.delete(`/spare-parts/${id}`);
+      toast.success("Request berhasil dihapus");
+      setDeleteOpen(false);
+      nav(-1);
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Gagal menghapus");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (loading) return <AppShell><div className="text-center py-20 text-slate-400">Memuat...</div></AppShell>;
   if (!part) return <AppShell><div className="text-center py-20 text-slate-400">Part tidak ditemukan.</div></AppShell>;
 
   const canEdit = user?.role === "creator" || part.requestor_id === user?.id;
+  const canDelete = canEdit;
 
   return (
     <AppShell>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5 animate-fade-up">
-        <button onClick={() => (window.history.length > 1 ? nav(-1) : nav("/database"))} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 text-sm" data-testid="detail-back">
+        <button onClick={() => (window.history.length > 1 ? nav(-1) : nav("/master"))} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 text-sm" data-testid="detail-back">
           <ArrowLeft className="w-4 h-4" /> Kembali
         </button>
         <div className="flex items-center gap-2">
+          {canDelete && (
+            <button onClick={openDelete} className="border border-red-200 text-red-600 hover:bg-red-50 px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="detail-delete-btn">
+              <Trash2 className="w-4 h-4" /> Hapus
+            </button>
+          )}
           {canEdit && (
             <button onClick={() => setEditInfoOpen(true)} className="border border-slate-300 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="detail-edit-info-btn">
               <Pencil className="w-4 h-4" /> Edit Info
@@ -122,8 +154,60 @@ export default function SparePartDetailPage() {
 
       <EditInfoDialog open={editInfoOpen} onClose={() => setEditInfoOpen(false)} part={part} onSaved={(updated) => { setPart(updated); setEditInfoOpen(false); }} />
 
+      <DeleteDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={doDelete}
+        part={part}
+        stockImpact={stockImpact}
+        busy={deleting}
+      />
+
       <Lightbox open={lightbox.open} fileId={lightbox.fileId} filename={lightbox.filename} onClose={() => setLightbox({ open: false, fileId: null, filename: "" })} />
     </AppShell>
+  );
+}
+
+function DeleteDialog({ open, onClose, onConfirm, part, stockImpact, busy }) {
+  const hasIn = stockImpact?.has_in;
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md" data-testid="detail-delete-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-red-700">
+            <AlertTriangle className="w-5 h-5" /> Hapus Request
+          </DialogTitle>
+        </DialogHeader>
+        <div className="text-sm text-slate-700 space-y-3">
+          <div className="bg-slate-50 rounded-lg p-3">
+            <div className="font-semibold text-slate-900">{part?.nama_barang}</div>
+            <div className="text-xs text-slate-500">{part?.type} · {part?.maker} · {part?.line_area}</div>
+          </div>
+          {stockImpact === null && <div className="text-xs text-slate-400">Memeriksa dampak stock…</div>}
+          {hasIn ? (
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm" data-testid="delete-dialog-impact">
+              <div className="font-semibold mb-1">Stock impact</div>
+              <p>
+                Request ini sudah masuk stock (IN +{stockImpact.in_quantity}). Jika dihapus, sistem akan membuat
+                <strong> OUT adjustment −{stockImpact.in_quantity}</strong> untuk mengembalikan stock. Lanjutkan?
+              </p>
+              <div className="mt-1 text-xs text-amber-700">
+                Master Part: <strong>{stockImpact.master_part_name}</strong> · current stock {stockImpact.master_current_stock ?? "—"}
+              </div>
+              <div className="mt-1 text-[11px] text-amber-700">Histori movement tetap tersimpan sebagai jejak audit.</div>
+            </div>
+          ) : stockImpact && (
+            <div className="text-xs text-slate-500">Request ini belum mempengaruhi stock — penghapusan tidak akan men-trigger adjustment.</div>
+          )}
+        </div>
+        <DialogFooter>
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm" data-testid="delete-dialog-cancel">Batal</button>
+          <button onClick={onConfirm} disabled={busy} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-60" data-testid="delete-dialog-confirm">
+            {busy ? "Menghapus..." : "Lanjutkan & Hapus"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
