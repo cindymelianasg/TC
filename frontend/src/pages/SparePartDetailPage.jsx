@@ -11,7 +11,7 @@ import FileUploader from "@/components/FileUploader";
 import SignaturePaste from "@/components/SignaturePaste";
 import Lightbox from "@/components/Lightbox";
 import { api, formatApiError } from "@/lib/api";
-import { LINE_AREAS } from "@/constants/lines";
+import { LINE_AREAS, lineFromKey } from "@/constants/lines";
 import { formatDateTimeWIB, formatDateID } from "@/lib/dateUtils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";

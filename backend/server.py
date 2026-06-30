@@ -39,8 +39,16 @@ STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 DEFAULT_PASSWORD = os.environ.get('DEFAULT_PASSWORD', '123456')
 CREATOR_NIK = os.environ.get('CREATOR_NIK', '32521')
 
-LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLING", "FINAL INSPECTION"]
+LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLING & FI"]
 RANK_OPTIONS = ["SEC.HEAD", "SUPERVISOR", "SENIOR FOREMAN", "FOREMAN", "PELAKSANA"]
+
+def normalize_line(line: Optional[str]) -> Optional[str]:
+    if not line:
+        return line
+    u = line.upper().strip()
+    if u in ("ASSEMBLING", "FINAL INSPECTION", "ASSEMBLING & FI", "ASSEMBLING&FI"):
+        return "ASSEMBLING & FI"
+    return u
 
 INITIAL_USERS = [
     {"name": "ZULKIFLI", "email": "zulkifli@suzuki.co.id", "nik": "6282", "rank": "SEC.HEAD", "area": "TC BODY"},
@@ -853,23 +861,38 @@ async def _try_auto_in(part: dict, user: dict):
 
 def compute_stock_status(p: dict) -> str:
     cs = p.get("current_stock")
-    ms = p.get("minimum_stock") or 0
     if cs is None:
         return "NEED UPDATE"
     if cs <= 0:
         return "NO STOCK"
-    if cs <= ms:
-        return "BELOW MIN"
-    return "OK"
+    if cs < 2:
+        return "LOW STOCK"
+    return "AMAN"
+
+def compute_action(p: dict) -> str:
+    """Action label per spec: AMAN / LOW STOCK / ORDER SEKARANG!!! / CHECK SUBSTITUTE / MONITOR / NEED UPDATE."""
+    cs = p.get("current_stock")
+    lvl = p.get("level_part") or "Stock"
+    if cs is None:
+        return "NEED UPDATE"
+    if cs <= 0:
+        if lvl == "Critical":
+            return "ORDER SEKARANG!!!"
+        if lvl == "Substitusi":
+            return "CHECK SUBSTITUTE"
+        return "MONITOR"
+    if cs < 2:
+        return "LOW STOCK"
+    return "AMAN"
 
 def compute_warning(p: dict):
-    st = compute_stock_status(p)
-    lvl = p.get("level_part") or "Stock"
-    if lvl == "Critical" and st in ("NO STOCK", "NEED UPDATE", "BELOW MIN"):
+    """Backwards-compat warning used by old endpoints."""
+    a = compute_action(p)
+    if a == "ORDER SEKARANG!!!":
         return "CRITICAL"
-    if lvl == "Substitusi" and st in ("NO STOCK", "BELOW MIN"):
+    if a == "CHECK SUBSTITUTE":
         return "CHECK_SUBSTITUTE"
-    if st == "BELOW MIN":
+    if a in ("LOW STOCK", "MONITOR"):
         return "BELOW_MIN"
     return None
 
@@ -879,6 +902,7 @@ def master_with_status(m: dict) -> dict:
     m = dict(m)
     m.pop("_id", None)
     m["stock_status"] = compute_stock_status(m)
+    m["action"] = compute_action(m)
     m["warning"] = compute_warning(m)
     return m
 
@@ -1176,35 +1200,27 @@ async def list_movements(
 async def stock_summary(line: Optional[str] = None, user=Depends(get_current_user)):
     query: Dict[str, Any] = {}
     if line and line.upper() != "SEMUA":
-        query["line_area"] = line.upper()
+        query["line_area"] = normalize_line(line)
     all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(100000)
     total = len(all_parts)
-    critical = 0
-    need_order = 0
-    need_update = 0
-    no_stock = 0
-    below_min = 0
+    critical_order = 0     # Level Critical AND stock == 0
+    need_order = 0         # LOW STOCK or NO STOCK (excl critical-order)
+    need_update = 0        # cs is None
     critical_list = []
     for p in all_parts:
-        st = compute_stock_status(p)
-        warn = compute_warning(p)
-        if p.get("level_part") == "Critical" and st in ("NO STOCK", "NEED UPDATE", "BELOW MIN"):
-            critical += 1
-            critical_list.append({**p, "stock_status": st, "warning": warn})
-        if warn == "BELOW_MIN" or warn == "CHECK_SUBSTITUTE":
+        action = compute_action(p)
+        if action == "ORDER SEKARANG!!!":
+            critical_order += 1
+            critical_list.append({**p, "stock_status": compute_stock_status(p), "action": action})
+        elif action in ("LOW STOCK", "CHECK SUBSTITUTE", "MONITOR"):
             need_order += 1
-        if st == "NEED UPDATE":
+        elif action == "NEED UPDATE":
             need_update += 1
-        if st == "NO STOCK":
-            no_stock += 1
-        if st == "BELOW MIN":
-            below_min += 1
-    # Sort critical list by status urgency
-    order = {"NO STOCK": 0, "NEED UPDATE": 1, "BELOW MIN": 2}
-    critical_list.sort(key=lambda p: order.get(p["stock_status"], 99))
     return {
-        "total": total, "critical": critical, "need_order": need_order, "need_update": need_update,
-        "no_stock": no_stock, "below_min": below_min,
+        "total": total,
+        "critical": critical_order,
+        "need_order": need_order,
+        "need_update": need_update,
         "critical_list": critical_list[:50],
     }
 
