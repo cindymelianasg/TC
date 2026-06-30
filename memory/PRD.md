@@ -56,3 +56,15 @@ Bukan inventory/stock management system, melainkan progress tracker untuk mainte
 - P2: Split server.py jadi modules (auth, parts, master, movements, dashboard)
 - P2: Master Data status filter di backend (saat ini client-side after pagination)
 - P2: Push notifications saat ada Critical Part baru
+
+## Iteration 4 — Line/Area Migration Fix + Master Reset (Feb 2026)
+- Strict validation: VALID_LINE_AREAS = [PRESSING, WELDING, PAINTING, INJECTION, SEAT, ASSEMBLING & FI]. Reject ASSEMBLING/FI/FINAL INSPECTION di POST/PUT /master-parts dan import preview/save.
+- Removed silent migration di `normalize_line()` & `lineFromKey()` — invalid values dipertahankan apa adanya supaya UI bisa surface migration warning.
+- New endpoint: DELETE /api/master-parts-admin/reset-all (Creator) — wipe all master_parts + movements.
+- New endpoint: GET /api/master-parts-admin/invalid-lines — count + samples of invalid line_area entries.
+- Migration warning banner di Master Data page dengan count, samples, dan Reset link.
+- Reset Master Data dialog dengan "Type RESET to confirm" pattern.
+- Edit Master Dialog: preserve invalid value as flagged option (⚠ ASSEMBLING (invalid)), tampilkan inline warning, block Simpan.
+- Dashboard: section "Total Part — {line}" hanya muncul saat specific line dipilih (hidden saat Semua).
+- Form Request: text "ke supervisor" → "ke atasan".
+- All 17 backend tests pass (test_smart_tc_v4.py).
