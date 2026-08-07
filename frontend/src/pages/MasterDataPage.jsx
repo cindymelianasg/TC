@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, MapPin, Check, AlertTriangle, RotateCcw } from "lucide-react";
+import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, AlertTriangle, RotateCcw, ChevronDown } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api, formatApiError } from "@/lib/api";
 import { LINE_AREAS, VALID_LINE_KEYS } from "@/constants/lines";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import LocationDetailModal from "@/components/LocationDetailModal";
 
 const LEVELS = ["Critical", "Substitusi", "Stock"];
 const PAGE_SIZE_OPTIONS = [20, 40, 80, 100];
@@ -64,9 +65,10 @@ export default function MasterDataPage() {
   const [prefilledNew, setPrefilledNew] = useState(null);
   const [outOpen, setOutOpen] = useState(false);
   const [outPart, setOutPart] = useState(null);
-  const [locationEditId, setLocationEditId] = useState(null);
-  const [locationDraft, setLocationDraft] = useState("");
+  const [locModal, setLocModal] = useState({ open: false, part: null });
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetLineTarget, setResetLineTarget] = useState("ALL"); // 'ALL' or a specific line
+  const [resetMenuOpen, setResetMenuOpen] = useState(false);
   const [invalidLines, setInvalidLines] = useState({ count: 0, samples: [] });
 
   // Fetch invalid line/area count for migration banner
@@ -143,8 +145,12 @@ export default function MasterDataPage() {
 
   const doReset = async () => {
     try {
-      const { data } = await api.delete("/master-parts-admin/reset-all");
-      toast.success(`Reset selesai: ${data.deleted_master_parts} master part & ${data.deleted_movements} movement dihapus`);
+      const url = resetLineTarget === "ALL"
+        ? "/master-parts-admin/reset-all"
+        : `/master-parts-admin/reset-line/${encodeURIComponent(resetLineTarget)}`;
+      const { data } = await api.delete(url);
+      const label = resetLineTarget === "ALL" ? "semua Master Data" : `Master Data ${resetLineTarget}`;
+      toast.success(`Reset ${label} selesai: ${data.deleted_master_parts} part & ${data.deleted_movements} movement dihapus`);
       setResetOpen(false);
       setInvalidLines({ count: 0, samples: [] });
       fetchData();
@@ -153,19 +159,12 @@ export default function MasterDataPage() {
     }
   };
 
-  const beginEditLocation = (m) => {
-    setLocationEditId(m.id);
-    setLocationDraft(m.location || "");
+  const openResetDialog = (target) => {
+    setResetLineTarget(target);
+    setResetMenuOpen(false);
+    setResetOpen(true);
   };
 
-  const saveLocation = async (m) => {
-    try {
-      await api.put(`/master-parts/${m.id}`, { location: locationDraft });
-      toast.success("Lokasi diperbarui");
-      setLocationEditId(null);
-      fetchData();
-    } catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
-  };
 
   return (
     <AppShell>
@@ -183,9 +182,28 @@ export default function MasterDataPage() {
               <button onClick={() => { setEditPart(null); setEditOpen(true); }} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="master-add-btn">
                 <Plus className="w-4 h-4" /> Tambah Part
               </button>
-              <button onClick={() => setResetOpen(true)} className="border border-red-200 text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="master-reset-btn" title="Hapus semua Master Data">
-                <RotateCcw className="w-4 h-4" /> Reset Master Data
-              </button>
+              <div className="relative">
+                <button onClick={() => setResetMenuOpen((v) => !v)}
+                  className="border border-red-200 text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5"
+                  data-testid="master-reset-menu-btn">
+                  <RotateCcw className="w-4 h-4" /> Reset <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+                {resetMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg overflow-hidden z-20 min-w-[220px]" data-testid="master-reset-menu">
+                    <button onClick={() => openResetDialog("ALL")}
+                      className="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 hover:text-red-700 border-b border-slate-100" data-testid="master-reset-all-item">
+                      <div className="font-semibold">Reset All Master Data</div>
+                      <div className="text-[11px] text-slate-500">Hapus semua part & movements</div>
+                    </button>
+                    {LINE_AREAS.map((l) => (
+                      <button key={l.key} onClick={() => openResetDialog(l.key)}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-red-50 hover:text-red-700 border-b border-slate-100 last:border-0" data-testid={`master-reset-line-item-${l.slug}`}>
+                        <div className="font-medium">Reset per Line: {l.key}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -206,7 +224,7 @@ export default function MasterDataPage() {
               </div>
             )}
             {isCreator && (
-              <button onClick={() => setResetOpen(true)} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-amber-800 underline hover:text-amber-900" data-testid="master-invalid-reset-link">
+              <button onClick={() => openResetDialog("ALL")} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-amber-800 underline hover:text-amber-900" data-testid="master-invalid-reset-link">
                 Reset Master Data sekarang →
               </button>
             )}
@@ -241,6 +259,7 @@ export default function MasterDataPage() {
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
               <tr>
                 <th className="px-3 py-3 text-left font-medium">No</th>
+                <th className="px-3 py-3 text-left font-medium">No. Reff</th>
                 <th className="px-3 py-3 text-left font-medium">Name Part</th>
                 <th className="px-3 py-3 text-left font-medium">Type</th>
                 <th className="px-3 py-3 text-left font-medium">Maker</th>
@@ -253,37 +272,28 @@ export default function MasterDataPage() {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={10} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
+              {loading && <tr><td colSpan={11} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
               {!loading && data.items.length === 0 && (
-                <tr><td colSpan={10} className="text-center py-10 text-slate-400">Tidak ada data sesuai filter.</td></tr>
+                <tr><td colSpan={11} className="text-center py-10 text-slate-400">Tidak ada data sesuai filter.</td></tr>
               )}
               {!loading && data.items.map((m, i) => {
-                const isEditingLoc = locationEditId === m.id;
                 return (
                   <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50" data-testid={`master-row-${i}`}>
                     <td className="px-3 py-3 text-slate-700">{(page - 1) * pageSize + i + 1}</td>
-                    <td className="px-3 py-3 text-slate-900 font-medium max-w-[280px]">
+                    <td className="px-3 py-3 text-slate-600 font-mono text-xs">{m.reff || "-"}</td>
+                    <td className="px-3 py-3 text-slate-900 font-medium max-w-[260px]">
                       <div className="truncate">{m.part_name}</div>
-                      {m.reff && <div className="text-[11px] text-slate-400">REFF {m.reff}</div>}
                     </td>
                     <td className="px-3 py-3 text-slate-700 max-w-[200px] truncate">{m.type || "-"}</td>
                     <td className="px-3 py-3 text-slate-700 max-w-[160px] truncate">{m.maker || "-"}</td>
                     <td className="px-3 py-3 text-slate-700">{m.line_area}</td>
-                    <td className="px-3 py-3 text-slate-700">
-                      {isEditingLoc ? (
-                        <div className="flex items-center gap-1">
-                          <input value={locationDraft} onChange={(e) => setLocationDraft(e.target.value)}
-                            className="w-24 rounded border border-slate-300 px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500" data-testid={`master-loc-input-${i}`} />
-                          <button onClick={() => saveLocation(m)} className="p-1 rounded hover:bg-emerald-50 text-emerald-600" data-testid={`master-loc-save-${i}`}>
-                            <Check className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ) : (
-                        <button onClick={() => beginEditLocation(m)} className="inline-flex items-center gap-1 text-left hover:text-blue-600" data-testid={`master-loc-edit-${i}`}>
-                          <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="text-xs">{m.location || "-"}</span>
+                    <td className="px-3 py-3">
+                      {m.location ? (
+                        <button onClick={() => setLocModal({ open: true, part: m })}
+                          className="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline" data-testid={`master-loc-${i}`}>
+                          {m.location}
                         </button>
-                      )}
+                      ) : <span className="text-xs text-slate-400">-</span>}
                     </td>
                     <td className="px-3 py-3">
                       <span className={`status-pill ${LEVEL_STYLES[m.level_part]}`}>{m.level_part}</span>

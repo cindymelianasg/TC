@@ -43,6 +43,40 @@ LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLIN
 VALID_LINE_AREAS = set(LINE_AREAS)
 RANK_OPTIONS = ["SEC.HEAD", "SUPERVISOR", "SENIOR FOREMAN", "FOREMAN", "PELAKSANA"]
 
+# ---- Suzuki Location Code Parser (SOP: OPL PENOMORAN RAK GUDANG) ----
+# Format: [XX Gudang][XX Rak][XX Tingkat][L|R Sisi][XX Urutan]  → 9 chars
+LOCATION_SECTION_MAP = {
+    "10": "Pressing",
+    "20": "Welding",
+    "30": "Painting Body",
+    "40": "Central Maintenance / Assembling, FI & Common Part",
+    "50": "Resin (Injection & Painting Bumper)",
+    "60": "Seat",
+}
+LOCATION_SIDE_MAP = {"L": "Posisi Kiri (Left)", "R": "Posisi Kanan (Right)"}
+
+def parse_location_code(code: Optional[str]) -> Dict[str, Any]:
+    """Decode Suzuki 9-char location code into structured fields."""
+    if not code:
+        return {"raw": code, "valid": False, "reason": "kosong"}
+    c = str(code).strip().upper()
+    if len(c) != 9:
+        return {"raw": code, "valid": False, "reason": f"Panjang kode {len(c)} (harus 9 karakter)"}
+    section = c[0:2]
+    rack = c[2:4]
+    tingkat = c[4:6]
+    sisi = c[6:7]
+    urutan = c[7:9]
+    return {
+        "raw": c,
+        "valid": True,
+        "gudang": {"code": section, "name": LOCATION_SECTION_MAP.get(section, "Unknown Section")},
+        "rak": {"code": rack, "label": f"Rak No. {int(rack)}" if rack.isdigit() else rack},
+        "tingkat": {"code": tingkat, "label": f"Tingkat/Susunan ke No. {int(tingkat)}" if tingkat.isdigit() else tingkat},
+        "sisi": {"code": sisi, "label": LOCATION_SIDE_MAP.get(sisi, sisi)},
+        "urutan": {"code": urutan, "label": f"Barisan No. {int(urutan)}" if urutan.isdigit() else urutan},
+    }
+
 def normalize_line(line: Optional[str]) -> Optional[str]:
     """Normalise for query filtering only. Does NOT silently migrate legacy values.
     Use validate_line_area() for write operations to reject invalid values."""
@@ -830,28 +864,106 @@ async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
 # -------------------------------------------------------------------
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
-    """Aggregated procurement summary across all lines (or filtered by line)."""
+    """Aggregated procurement + movement summary. Filters:
+    - line: 'PLANT' | 'SEMUA' | None → all lines. Else specific line.
+    - month, year: default current month/year.
+    Returns procurement counts, progress deltas, and IN/OUT quantities for the period.
+    """
     now = datetime.now(timezone.utc)
-    if not month:
-        month = now.month
-    if not year:
-        year = now.year
+    if not month: month = now.month
+    if not year: year = now.year
     m = f"{int(month):02d}"
-    query: Dict[str, Any] = {"order_tanggal": {"$regex": f"^{int(year)}-{m}"}}
-    if line and line.upper() != "SEMUA":
-        query["line_area"] = normalize_line(line)
-    parts = await db.spare_parts.find(query, {"_id": 0}).sort("order_tanggal", -1).to_list(100000)
+    ym = f"{int(year)}-{m}"
+
+    line_filter: Dict[str, Any] = {}
+    if line and line.upper() not in ("PLANT", "SEMUA"):
+        line_filter["line_area"] = normalize_line(line)
+
+    # Procurement counts by month (based on order_tanggal)
+    part_query: Dict[str, Any] = {**line_filter, "order_tanggal": {"$regex": f"^{ym}"}}
+    parts = await db.spare_parts.find(part_query, {"_id": 0}).sort("order_tanggal", -1).to_list(100000)
     enriched = [part_with_status(p) for p in parts]
-    summary = {
-        "total": len(enriched),
-        "request": sum(1 for p in enriched if p["status"] == "REQUEST"),
-        "penawaran": sum(1 for p in enriched if p["status"] == "PENAWARAN"),
-        "nego": sum(1 for p in enriched if p["status"] == "NEGO"),
-        "afa": sum(1 for p in enriched if p["status"] == "AFA PROCESS"),
-        "po": sum(1 for p in enriched if p["status"] == "PO PROCESS"),
-        "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
+    total = len(enriched)
+    afa_reached = sum(1 for p in enriched if p.get("afa_no") or p.get("afa_date"))
+    po_reached = sum(1 for p in enriched if p.get("po_no") or p.get("po_date"))
+    datang_reached = sum(1 for p in enriched if p.get("datang_no") or p.get("datang_date"))
+
+    # Movements this month (based on movement.date). Uses master_part.line_area for filtering.
+    mv_query: Dict[str, Any] = {"date": {"$regex": f"^{ym}"}, **line_filter}
+    in_mvs = await db.movements.find({**mv_query, "type": "IN"}, {"_id": 0}).to_list(100000)
+    out_mvs = await db.movements.find({**mv_query, "type": "OUT"}, {"_id": 0}).to_list(100000)
+    in_qty = sum(int(mv.get("quantity") or 0) for mv in in_mvs)
+    out_qty = sum(int(mv.get("quantity") or 0) for mv in out_mvs)
+
+    return {
+        "line": line or "PLANT", "month": month, "year": year,
+        "procurement": {
+            "total_request": total,
+            "afa_reached": afa_reached,
+            "remaining_request": total - afa_reached,
+            "po_reached": po_reached,
+            "waiting_po": afa_reached - po_reached,
+            "datang_reached": datang_reached,
+            "waiting_arrival": po_reached - datang_reached,
+        },
+        "movements": {
+            "in_count": len(in_mvs), "in_qty": in_qty,
+            "out_count": len(out_mvs), "out_qty": out_qty,
+        },
+        # Kept for backwards compat with older Dashboard
+        "summary": {
+            "total": total,
+            "request": sum(1 for p in enriched if p["status"] == "REQUEST"),
+            "penawaran": sum(1 for p in enriched if p["status"] == "PENAWARAN"),
+            "nego": sum(1 for p in enriched if p["status"] == "NEGO"),
+            "afa": sum(1 for p in enriched if p["status"] == "AFA PROCESS"),
+            "po": sum(1 for p in enriched if p["status"] == "PO PROCESS"),
+            "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
+        },
     }
-    return {"line": line or "SEMUA", "month": month, "year": year, "summary": summary}
+
+@api_router.get("/dashboard/drilldown/{card}")
+async def dashboard_drilldown(card: str, line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
+    """Return list of items for a Dashboard card. card ∈ {total_request, afa, po, arrival, out, remaining, waiting_po, waiting_arrival}."""
+    now = datetime.now(timezone.utc)
+    if not month: month = now.month
+    if not year: year = now.year
+    m = f"{int(month):02d}"
+    ym = f"{int(year)}-{m}"
+    line_filter: Dict[str, Any] = {}
+    if line and line.upper() not in ("PLANT", "SEMUA"):
+        line_filter["line_area"] = normalize_line(line)
+
+    if card in ("arrival", "out"):
+        mv_query: Dict[str, Any] = {"date": {"$regex": f"^{ym}"}, **line_filter,
+                                    "type": "IN" if card == "arrival" else "OUT"}
+        items = await db.movements.find(mv_query, {"_id": 0}).sort("date", -1).limit(500).to_list(500)
+        return {"card": card, "count": len(items), "items": items}
+
+    part_query: Dict[str, Any] = {**line_filter, "order_tanggal": {"$regex": f"^{ym}"}}
+    if card == "afa":
+        part_query["$or"] = [{"afa_no": {"$exists": True, "$ne": None}}, {"afa_date": {"$exists": True, "$ne": None}}]
+    elif card == "po":
+        part_query["$or"] = [{"po_no": {"$exists": True, "$ne": None}}, {"po_date": {"$exists": True, "$ne": None}}]
+    elif card == "remaining":  # requests without AFA yet
+        part_query["$and"] = [
+            {"$or": [{"afa_no": None}, {"afa_no": {"$exists": False}}]},
+            {"$or": [{"afa_date": None}, {"afa_date": {"$exists": False}}]},
+        ]
+    elif card == "waiting_po":
+        part_query["$or"] = [{"afa_no": {"$exists": True, "$ne": None}}, {"afa_date": {"$exists": True, "$ne": None}}]
+        part_query["$and"] = [
+            {"$or": [{"po_no": None}, {"po_no": {"$exists": False}}]},
+            {"$or": [{"po_date": None}, {"po_date": {"$exists": False}}]},
+        ]
+    elif card == "waiting_arrival":
+        part_query["$or"] = [{"po_no": {"$exists": True, "$ne": None}}, {"po_date": {"$exists": True, "$ne": None}}]
+        part_query["$and"] = [
+            {"$or": [{"datang_no": None}, {"datang_no": {"$exists": False}}]},
+            {"$or": [{"datang_date": None}, {"datang_date": {"$exists": False}}]},
+        ]
+    items = await db.spare_parts.find(part_query, {"_id": 0}).sort("order_tanggal", -1).limit(500).to_list(500)
+    return {"card": card, "count": len(items), "items": [part_with_status(p) for p in items]}
 
 @api_router.get("/dashboard/{line}")
 async def dashboard_line(line: str, month: int = None, year: int = None, user=Depends(get_current_user)):
@@ -1040,6 +1152,9 @@ class ImportSaveRequest(BaseModel):
     rows: List[Dict[str, Any]]
     resolutions: Optional[List[str]] = None
     default_resolution: str = "skip"
+    # Optional: seed month for creating initial IN/OUT movement records.
+    # Format YYYY-MM. If omitted, uses current month.
+    seed_month: Optional[str] = None
 
 class MovementOutCreate(BaseModel):
     master_part_id: str
@@ -1185,6 +1300,21 @@ async def reset_master_data(user=Depends(get_current_user)):
     mv_res = await db.movements.delete_many({})
     return {"ok": True, "deleted_master_parts": mp_res.deleted_count, "deleted_movements": mv_res.deleted_count}
 
+@api_router.delete("/master-parts-admin/reset-line/{line}")
+async def reset_master_data_line(line: str, user=Depends(get_current_user)):
+    """Creator-only: Wipe master_parts + movements only for the specified line."""
+    require_creator(user)
+    line_area = validate_line_area(line)
+    part_ids = [p["id"] async for p in db.master_parts.find({"line_area": line_area}, {"id": 1})]
+    mp_res = await db.master_parts.delete_many({"line_area": line_area})
+    mv_res = await db.movements.delete_many({"master_part_id": {"$in": part_ids}})
+    return {"ok": True, "line": line_area, "deleted_master_parts": mp_res.deleted_count, "deleted_movements": mv_res.deleted_count}
+
+@api_router.get("/master-parts-admin/parse-location")
+async def api_parse_location(code: str, user=Depends(get_current_user)):
+    """Decode a Suzuki location code (e.g. '300105L05') into structured parts (SOP OPL PENOMORAN RAK GUDANG)."""
+    return parse_location_code(code)
+
 @api_router.get("/master-parts-admin/invalid-lines")
 async def list_invalid_line_parts(user=Depends(get_current_user)):
     """Returns count + sample of master_parts whose line_area is not in VALID_LINE_AREAS.
@@ -1239,7 +1369,12 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
     line_area = validate_line_area(payload.line_area)
     resolutions = payload.resolutions or []
     default_res = payload.default_resolution
+    # Seed month for initial IN/OUT movements
+    now = datetime.now(timezone.utc)
+    seed_month = payload.seed_month or f"{now.year}-{now.month:02d}"
+    seed_date = f"{seed_month}-01"  # first of the seed month
     created = updated = skipped = invalid = 0
+    movements_created = 0
     for i, r in enumerate(payload.rows):
         name = (r.get("part_name") or "").strip()
         if not name:
@@ -1251,23 +1386,27 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
         existing = await db.master_parts.find_one({
             "part_name": name, "type": type_v, "maker": maker_v, "line_area": line_area,
         })
+        # Level Part: default 'Stock' per spec
         lvl = r.get("level_part") or "Stock"
         if lvl not in LEVEL_OPTIONS:
             lvl = "Stock"
-        # Stock semantics: keep None as NEED UPDATE; 0 stays 0 (NO STOCK)
-        cs = r.get("current_stock")
-        if cs == "" or cs is None:
+        # Minimum Stock: default 2 per spec (unless user gave a value)
+        ms = r.get("minimum_stock")
+        if ms in (None, ""):
+            ms = 2
+        else:
+            try: ms = int(ms)
+            except Exception: ms = 2
+        # IN / OUT / Current Stock from Excel (last-update month values)
+        in_qty = _to_int_or_zero(r.get("in_qty"))
+        out_qty = _to_int_or_zero(r.get("out_qty"))
+        remark = (r.get("remark") or "").strip()
+        cs_raw = r.get("current_stock")
+        if cs_raw == "" or cs_raw is None:
             cs = None
         else:
-            try:
-                cs = int(cs)
-            except Exception:
-                cs = None
-        ms = r.get("minimum_stock")
-        try:
-            ms = int(ms) if ms not in (None, "") else 0
-        except Exception:
-            ms = 0
+            try: cs = int(cs_raw)
+            except Exception: cs = None
         if existing:
             if res == "skip":
                 skipped += 1
@@ -1279,10 +1418,19 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
                     "level_part": lvl,
                     "reff": r.get("reff") or existing.get("reff", ""),
                     "location": r.get("location") or existing.get("location", ""),
+                    "remark": remark or existing.get("remark", ""),
                     "updated_at": now_iso(),
                     "updated_by": {"name": user["name"], "nik": user["nik"], "action": "Update via Import"},
                 }
                 await db.master_parts.update_one({"id": existing["id"]}, {"$set": upd})
+                # Seed movements for the last-update month if provided
+                mid = existing["id"]
+                if in_qty > 0:
+                    await _seed_movement(mid, line_area, "IN", in_qty, seed_date, user, note=f"Seed Import {seed_month}")
+                    movements_created += 1
+                if out_qty > 0:
+                    await _seed_movement(mid, line_area, "OUT", out_qty, seed_date, user, note=f"Seed Import {seed_month}")
+                    movements_created += 1
                 updated += 1
                 continue
         doc = {
@@ -1290,6 +1438,7 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
             "part_name": name, "type": type_v, "maker": maker_v, "line_area": line_area,
             "current_stock": cs, "minimum_stock": ms, "level_part": lvl,
             "reff": r.get("reff") or "", "location": r.get("location") or "",
+            "remark": remark,
             "created_at": now_iso(), "updated_at": now_iso(),
             "updated_by": {"name": user["name"], "nik": user["nik"], "action": "Import Excel"},
             "edit_history": [],
@@ -1297,9 +1446,42 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
         try:
             await db.master_parts.insert_one(doc)
             created += 1
+            # Seed movements
+            if in_qty > 0:
+                await _seed_movement(doc["id"], line_area, "IN", in_qty, seed_date, user, note=f"Seed Import {seed_month}")
+                movements_created += 1
+            if out_qty > 0:
+                await _seed_movement(doc["id"], line_area, "OUT", out_qty, seed_date, user, note=f"Seed Import {seed_month}")
+                movements_created += 1
         except Exception:
             skipped += 1
-    return {"created": created, "updated": updated, "skipped": skipped, "invalid": invalid}
+    return {"created": created, "updated": updated, "skipped": skipped, "invalid": invalid, "movements_created": movements_created, "seed_month": seed_month}
+
+def _to_int_or_zero(v) -> int:
+    if v in (None, ""):
+        return 0
+    try:
+        return max(0, int(float(v)))
+    except Exception:
+        return 0
+
+async def _seed_movement(master_part_id: str, line_area: str, mv_type: str, qty: int, date: str, user, note: str = ""):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "master_part_id": master_part_id,
+        "spare_part_id": None,
+        "type": mv_type,
+        "date": date,
+        "quantity": int(qty),
+        "line_area": line_area,
+        "note": note,
+        "actor": user["name"],
+        "actor_nik": user["nik"],
+        "is_adjustment": False,
+        "is_seed": True,
+        "created_at": now_iso(),
+    }
+    await db.movements.insert_one(doc)
 
 @api_router.post("/movements/out")
 async def create_out(payload: MovementOutCreate, user=Depends(get_current_user)):
@@ -1357,34 +1539,46 @@ async def list_movements(
 
 @api_router.get("/stock/summary")
 async def stock_summary(line: Optional[str] = None, user=Depends(get_current_user)):
+    """Categorises master parts into GOOD / MINIMUM / ZERO / CRITICAL buckets.
+    - GOOD: current_stock > minimum_stock
+    - MINIMUM: 0 < current_stock <= minimum_stock
+    - ZERO: current_stock == 0
+    - CRITICAL: level_part == 'Critical' AND current_stock == 0
+    Also returns need_update (current_stock is None) for informational purposes.
+    """
     query: Dict[str, Any] = {}
-    if line and line.upper() != "SEMUA":
+    if line and line.upper() != "PLANT" and line.upper() != "SEMUA":
         query["line_area"] = normalize_line(line)
-    all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(100000)
+    all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(200000)
     total = len(all_parts)
-    critical_order = 0     # Level Critical AND stock == 0
-    low_stock = 0          # current_stock > 0 but small (< 2) — display "LOW STOCK"
-    need_order = 0         # zero-stock non-critical: Substitusi -> CHECK SUBSTITUTE; Stock -> MONITOR
-    need_update = 0        # cs is None
-    critical_list = []
+    good_list, minimum_list, zero_list, critical_list, need_update_list = [], [], [], [], []
     for p in all_parts:
-        action = compute_action(p)
-        if action == "ORDER SEKARANG!!!":
-            critical_order += 1
-            critical_list.append({**p, "stock_status": compute_stock_status(p), "action": action})
-        elif action == "LOW STOCK":
-            low_stock += 1
-        elif action in ("CHECK SUBSTITUTE", "MONITOR"):
-            need_order += 1
-        elif action == "NEED UPDATE":
-            need_update += 1
+        cs = p.get("current_stock")
+        mn = p.get("minimum_stock") or 0
+        level = p.get("level_part") or "Stock"
+        p_out = {**p, "location_parsed": parse_location_code(p.get("location"))}
+        if cs is None:
+            need_update_list.append(p_out); continue
+        if cs == 0 and level == "Critical":
+            critical_list.append(p_out); continue
+        if cs == 0:
+            zero_list.append(p_out); continue
+        if cs <= mn:
+            minimum_list.append(p_out); continue
+        good_list.append(p_out)
     return {
         "total": total,
-        "critical": critical_order,
-        "low_stock": low_stock,
-        "need_order": need_order + low_stock,  # combined "Low Stock / Need Order" indicator
-        "need_update": need_update,
-        "critical_list": critical_list[:200],
+        "good": len(good_list),
+        "minimum": len(minimum_list),
+        "zero": len(zero_list),
+        "critical": len(critical_list),
+        "need_update": len(need_update_list),
+        # bounded lists for popup drilldown; full list available via /master-parts endpoint
+        "good_list": good_list[:500],
+        "minimum_list": minimum_list[:500],
+        "zero_list": zero_list[:500],
+        "critical_list": critical_list[:500],
+        "need_update_list": need_update_list[:500],
     }
 
 @api_router.get("/reports/movement-monthly")
