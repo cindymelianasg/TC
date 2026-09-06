@@ -88,7 +88,7 @@ export default function DashboardLinePage() {
             <RefreshCw className="w-4 h-4 text-slate-600" />
           </button>
           <button onClick={() => nav(`/parts/new?line=${line.slug}`)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5" data-testid="dashboard-add-btn">
-            <Plus className="w-4 h-4" /> Tambah Data
+            <Plus className="w-4 h-4" /> Request Part
           </button>
         </div>
       </div>

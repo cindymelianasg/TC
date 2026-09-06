@@ -138,42 +138,52 @@ export default function OverviewDashboardPage() {
           />
         </div>
       </section>
-
-      {/* TOTAL PART — hanya saat specific line */}
-      {line !== "PLANT" && (
-        <section className="mb-8" data-testid="dash-section-total-part">
-          <h2 className="text-sm font-semibold text-slate-700 mb-3 uppercase tracking-wider">Total Part — {line}</h2>
-          <div className="bg-white rounded-2xl border border-blue-200 p-5 shadow-sm w-full md:w-1/2" data-testid="dash-stat-total-part">
+      
+      {/* TOTAL PART — semua line maupun specific line */}
+      <section className="mb-8" data-testid="dash-section-total-part">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3 uppercase tracking-wider">
+          Total Part — {line === "PLANT" ? "ALL LINE" : line}
+          </h2>
+          
+          <div
+            className="bg-white rounded-2xl border border-blue-200 p-5 shadow-sm w-full md:w-1/2"
+            data-testid="dash-stat-total-part"
+          >
             <div className="flex items-start justify-between">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Part (Master Data)</div>
-                <div className="text-4xl font-bold text-blue-700 mt-2 tracking-tight tabular-nums">{loading ? "—" : (stockSummary?.total ?? 0)}</div>
-                <div className="text-xs text-slate-400 mt-1">Jumlah part terdaftar di {line}</div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Total Part (Master Data)
+                </div>
+                
+                <div className="text-4xl font-bold text-blue-700 mt-2 tracking-tight tabular-nums">
+                  {loading ? "—" : (stockSummary?.total ?? 0)}
+                </div>
+                  
+                <div className="text-xs text-slate-400 mt-1">
+                  Jumlah part terdaftar di {line === "PLANT" ? "seluruh line" : line}
+                </div>
               </div>
-              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
-                <Database className="w-5 h-5 text-blue-600" />
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
+
+      <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+        <Database className="w-5 h-5 text-blue-600" />
+      </div>
+    </div>
+  </div>
+</section>
 
       {/* STOCK ACTION REQUIRED */}
       <section className="mb-8" data-testid="dash-section-stock">
         <h2 className="text-sm font-semibold text-slate-700 mb-3 uppercase tracking-wider">Stock Action Required{line !== "PLANT" ? ` — ${line}` : ""}</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <ActionCard testId="dash-stat-good" label="Part Good" value={stockSummary?.good ?? 0}
-            sub="Current Stock > Min Stock" icon={CheckCircle2} accent="emerald"
+            sub="Min Stock ≤ Current Stock ≤ Max Stock" icon={CheckCircle2} accent="emerald"
             onClick={() => openStock("good", "Part Good — Current Stock > Minimum")} loading={loading} />
           <ActionCard testId="dash-stat-minimum" label="Part Minimum" value={stockSummary?.minimum ?? 0}
-            sub="Current ≤ Min (> 0)" icon={AlertTriangle} accent="amber"
+            sub="Current Stock ≤ Min Stock" icon={AlertTriangle} accent="amber"
             onClick={() => openStock("minimum", "Part Minimum — Perlu Order Segera")} loading={loading} />
           <ActionCard testId="dash-stat-zero" label="Part Zero" value={stockSummary?.zero ?? 0}
             sub="Current Stock = 0" icon={XCircle} accent="red"
             onClick={() => openStock("zero", "Part Zero — Stock Habis")} loading={loading} />
-          <ActionCard testId="dash-stat-critical" label="Critical Part" value={stockSummary?.critical ?? 0}
-            sub="Order Sekarang!!!" icon={AlertOctagon} accent="red-solid"
-            onClick={() => openStock("critical", "Critical Part — ORDER SEKARANG!!!")} loading={loading} />
         </div>
       </section>
 

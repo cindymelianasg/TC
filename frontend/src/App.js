@@ -29,7 +29,7 @@ function App() {
             <Toaster position="top-right" richColors closeButton />
             <Routes>
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/" element={<Navigate to="/area" replace />} />
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
               <Route path="/dashboard" element={<ProtectedRoute><OverviewDashboardPage /></ProtectedRoute>} />
               <Route path="/area" element={<ProtectedRoute><LineAreaPage /></ProtectedRoute>} />

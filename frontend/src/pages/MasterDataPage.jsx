@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Upload, Search, Pencil, Trash2, ArrowDownToLine, History, AlertTriangle, RotateCcw, ChevronDown } from "lucide-react";
+import { Plus, Upload, Search, Pencil, Trash2, ArrowUpToLine, History, AlertTriangle, RotateCcw, ChevronDown } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import { api, formatApiError } from "@/lib/api";
 import { LINE_AREAS, VALID_LINE_KEYS } from "@/constants/lines";
@@ -9,7 +9,6 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import LocationDetailModal from "@/components/LocationDetailModal";
 
-const LEVELS = ["Critical", "Substitusi", "Stock"];
 const PAGE_SIZE_OPTIONS = [20, 40, 80, 100];
 
 const LEVEL_STYLES = {
@@ -19,30 +18,22 @@ const LEVEL_STYLES = {
 };
 
 // status label that backend produces via `action`
-const ACTION_STYLES = {
-  "AMAN": "bg-emerald-100 text-emerald-700 border-emerald-200",
-  "LOW STOCK": "bg-yellow-100 text-yellow-800 border-yellow-200",
-  "ORDER SEKARANG!!!": "bg-red-100 text-red-700 border-red-200",
-  "CHECK SUBSTITUTE": "bg-amber-100 text-amber-800 border-amber-200",
-  "MONITOR": "bg-slate-100 text-slate-700 border-slate-200",
-  "NEED UPDATE": "bg-slate-100 text-slate-500 border-slate-200",
+const STOCK_STATUS_STYLES = {
+  "GOOD": "bg-emerald-100 text-emerald-700 border-emerald-200",
+  "MIN": "bg-yellow-100 text-yellow-800 border-yellow-200",
+  "ZERO": "bg-red-100 text-red-700 border-red-200",
 };
 
 const STATUS_FILTER_OPTIONS = [
   { value: "SEMUA", label: "Semua" },
-  { value: "AMAN", label: "Aman" },
-  { value: "LOW", label: "Low / Need Order" },
-  { value: "CRITICAL", label: "Order Sekarang" },
-  { value: "NEED UPDATE", label: "Need Update" },
+  { value: "GOOD", label: "GOOD" },
+  { value: "MIN", label: "MIN" },
+  { value: "ZERO", label: "ZERO" },
 ];
 
-function matchStatusFilter(action, filter) {
+function matchStatusFilter(stockStatus, filter) {
   if (filter === "SEMUA") return true;
-  if (filter === "AMAN") return action === "AMAN";
-  if (filter === "CRITICAL") return action === "ORDER SEKARANG!!!";
-  if (filter === "NEED UPDATE") return action === "NEED UPDATE";
-  if (filter === "LOW") return ["LOW STOCK", "CHECK SUBSTITUTE", "MONITOR"].includes(action);
-  return true;
+  return stockStatus === filter;
 }
 
 export default function MasterDataPage() {
@@ -51,8 +42,8 @@ export default function MasterDataPage() {
   const isCreator = user?.role === "creator";
   const [searchParams, setSearchParams] = useSearchParams();
   const [line, setLine] = useState("SEMUA");
-  const [levelPart, setLevelPart] = useState("SEMUA");
   const [statusFilter, setStatusFilter] = useState(searchParams.get("status") || "SEMUA");
+  const [reffQ, setReffQ] = useState("");
   const [partNameQ, setPartNameQ] = useState("");
   const [typeQ, setTypeQ] = useState("");
   const [makerQ, setMakerQ] = useState("");
@@ -108,29 +99,45 @@ export default function MasterDataPage() {
     try {
       // We over-fetch when status filter is client-side (LOW/AMAN/etc) since backend currently uses
       // legacy stock_status names. Simplest: rely on backend pagination but skip status filter param.
-      const params = { page, page_size: pageSize };
-      if (line !== "SEMUA") params.line = line;
-      if (levelPart !== "SEMUA") params.level_part = levelPart;
-      if (partNameQ) params.q = partNameQ;
+    const params = {
+     page,
+     page_size: pageSize,
+    };
+
+    if (line !== "SEMUA") {
+      params.line = line;
+     }
+
+    if (statusFilter !== "SEMUA") {
+    params.status = statusFilter;
+   }
+
+   if (reffQ) {
+     params.reff = reffQ;
+    }
+
+    if (partNameQ) {
+      params.q = partNameQ;
+    }
+
+   if (!partNameQ && (typeQ || makerQ)) {
+     params.q = typeQ || makerQ;
+   }
       // Type / Maker handled via combined q if name not present
       if (!partNameQ && (typeQ || makerQ)) params.q = typeQ || makerQ;
-      const { data } = await api.get("/master-parts", { params });
-      // Apply client-side status filter on the page slice (best effort; user can narrow with other filters)
-      const filtered = data.items.filter((m) => matchStatusFilter(m.action, statusFilter));
-      // Also apply client-side type/maker if both name and type/maker specified
-      const finalItems = filtered.filter((m) => {
-        if (typeQ && !(m.type || "").toLowerCase().includes(typeQ.toLowerCase())) return false;
-        if (makerQ && !(m.maker || "").toLowerCase().includes(makerQ.toLowerCase())) return false;
-        return true;
-      });
-      setData({ items: finalItems, total: data.total });
+const { data } = await api.get("/master-parts", { params });
+
+setData({
+  items: data.items || [],
+  total: data.total || 0,
+});   
     } finally {
       setLoading(false);
     }
-  }, [line, levelPart, statusFilter, partNameQ, typeQ, makerQ, page, pageSize]);
+  }, [line, statusFilter, reffQ, partNameQ, typeQ, makerQ, page, pageSize]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-  useEffect(() => { setPage(1); }, [line, levelPart, statusFilter, partNameQ, typeQ, makerQ, pageSize]);
+  useEffect(() => { setPage(1); }, [line, statusFilter, partNameQ, typeQ, makerQ, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / pageSize));
 
@@ -235,6 +242,7 @@ export default function MasterDataPage() {
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm">
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <SearchField label="No. Reff" value={reffQ} onChange={setReffQ} placeholder="Cari no.reff…" testId="master-q-reff" />
           <SearchField label="Name Part" value={partNameQ} onChange={setPartNameQ} placeholder="Cari nama…" testId="master-q-name" />
           <SearchField label="Type" value={typeQ} onChange={setTypeQ} placeholder="Cari type…" testId="master-q-type" />
           <SearchField label="Maker" value={makerQ} onChange={setMakerQ} placeholder="Cari maker…" testId="master-q-maker" />
@@ -242,10 +250,7 @@ export default function MasterDataPage() {
             <option value="SEMUA">Semua</option>
             {LINE_AREAS.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
           </SelectFilter>
-          <SelectFilter label="Level Part" value={levelPart} onChange={setLevelPart} testId="master-filter-level">
-            <option value="SEMUA">Semua</option>
-            {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
-          </SelectFilter>
+
           <SelectFilter label="Stock Status" value={statusFilter} onChange={setStatusFilter} testId="master-filter-status">
             {STATUS_FILTER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </SelectFilter>
@@ -258,23 +263,25 @@ export default function MasterDataPage() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
               <tr>
-                <th className="px-3 py-3 text-left font-medium">No</th>
-                <th className="px-3 py-3 text-left font-medium">No. Reff</th>
-                <th className="px-3 py-3 text-left font-medium">Name Part</th>
-                <th className="px-3 py-3 text-left font-medium">Type</th>
-                <th className="px-3 py-3 text-left font-medium">Maker</th>
-                <th className="px-3 py-3 text-left font-medium">Line / Area</th>
-                <th className="px-3 py-3 text-left font-medium">Location</th>
-                <th className="px-3 py-3 text-left font-medium">Level Part</th>
-                <th className="px-3 py-3 text-left font-medium">Current Stock</th>
-                <th className="px-3 py-3 text-left font-medium">Status</th>
-                <th className="px-3 py-3 text-right font-medium">Aksi</th>
-              </tr>
-            </thead>
+                 <th className="px-3 py-3 text-left font-medium">No</th>
+                 <th className="px-3 py-3 text-left font-medium">No. Reff</th>
+                 <th className="px-3 py-3 text-left font-medium">Name Part</th>
+                 <th className="px-3 py-3 text-left font-medium">Type</th>
+                 <th className="px-3 py-3 text-left font-medium">Maker</th>
+                 <th className="px-3 py-3 text-left font-medium">UOM</th>
+                 <th className="px-3 py-3 text-left font-medium">Min</th>
+                 <th className="px-3 py-3 text-left font-medium">Max</th>
+                 <th className="px-3 py-3 text-left font-medium">Current Stock</th>
+                 <th className="px-3 py-3 text-left font-medium">Line / Area</th>
+                 <th className="px-3 py-3 text-left font-medium">Location</th>
+                 <th className="px-3 py-3 text-left font-medium">Part Condition</th>
+                 <th className="px-3 py-3 text-right font-medium">Aksi</th>
+                </tr>
+              </thead>
             <tbody>
-              {loading && <tr><td colSpan={11} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
+              {loading && <tr><td colSpan={13} className="text-center py-10 text-slate-400">Memuat...</td></tr>}
               {!loading && data.items.length === 0 && (
-                <tr><td colSpan={11} className="text-center py-10 text-slate-400">Tidak ada data sesuai filter.</td></tr>
+                <tr><td colSpan={13} className="text-center py-10 text-slate-400">Tidak ada data sesuai filter.</td></tr>
               )}
               {!loading && data.items.map((m, i) => {
                 return (
@@ -286,28 +293,41 @@ export default function MasterDataPage() {
                     </td>
                     <td className="px-3 py-3 text-slate-700 max-w-[200px] truncate">{m.type || "-"}</td>
                     <td className="px-3 py-3 text-slate-700 max-w-[160px] truncate">{m.maker || "-"}</td>
-                    <td className="px-3 py-3 text-slate-700">{m.line_area}</td>
-                    <td className="px-3 py-3">
-                      {m.location ? (
-                        <button onClick={() => setLocModal({ open: true, part: m })}
-                          className="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline" data-testid={`master-loc-${i}`}>
-                          {m.location}
-                        </button>
-                      ) : <span className="text-xs text-slate-400">-</span>}
-                    </td>
-                    <td className="px-3 py-3">
-                      <span className={`status-pill ${LEVEL_STYLES[m.level_part]}`}>{m.level_part}</span>
-                    </td>
+                    <td className="px-3 py-3 text-slate-700">{m.uom || "-"}</td>
+                    <td className="px-3 py-3 text-slate-700">{m.minimum_stock ?? "-"}</td>
+                    <td className="px-3 py-3 text-slate-700">{m.maximum_stock ?? "-"}</td>
                     <td className={`px-3 py-3 font-semibold tabular-nums ${m.current_stock === null ? "text-slate-400" : m.current_stock === 0 ? "text-red-600" : "text-slate-900"}`}>
                       {m.current_stock === null ? "—" : m.current_stock}
                     </td>
+                    <td className="px-3 py-3 text-slate-700">{m.line_area}</td>
                     <td className="px-3 py-3">
-                      <span className={`status-pill ${ACTION_STYLES[m.action] || "bg-slate-100 text-slate-600 border-slate-200"}`} data-testid={`master-status-${i}`}>{m.action}</span>
+                      {m.location ? (
+                        <button
+                          onClick={() => setLocModal({ open: true, part: m })}
+                          className="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                          data-testid={`master-loc-${i}`}
+                        >
+                          {m.location}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={`status-pill ${
+                          STOCK_STATUS_STYLES[m.stock_status] ||
+                          "bg-slate-100 text-slate-600 border-slate-200"
+                        }`}
+                        data-testid={`master-status-${i}`}
+                      >
+                        {m.stock_status}
+                      </span>
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => { setOutPart(m); setOutOpen(true); }} title="OUT" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-out-${i}`}>
-                          <ArrowDownToLine className="w-4 h-4" />
+                          <ArrowUpToLine className="w-4 h-4" />
                         </button>
                         <button onClick={() => nav(`/master/${m.id}/movements`)} title="Riwayat" className="p-1.5 rounded hover:bg-slate-100 text-slate-600" data-testid={`master-history-${i}`}>
                           <History className="w-4 h-4" />
@@ -429,28 +449,50 @@ function EditDialog({ open, onClose, part, prefill, onSaved }) {
   const [form, setForm] = useState({});
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (part) {
-      // IMPORTANT: never silently replace invalid legacy line_area. Preserve raw value
-      // so UI can warn the Creator instead of defaulting to PRESSING.
-      setForm({
-        part_name: part.part_name || "", type: part.type || "", maker: part.maker || "",
-        line_area: part.line_area || "",
-        current_stock: part.current_stock ?? "", minimum_stock: part.minimum_stock ?? 0, level_part: part.level_part || "Stock",
-        reff: part.reff || "", location: part.location || "",
-      });
-    } else if (prefill) {
-      setForm({
-        part_name: prefill.part_name || "", type: prefill.type || "", maker: prefill.maker || "",
-        line_area: prefill.line_area || "ASSEMBLING & FI",
-        current_stock: prefill.current_stock ?? "", minimum_stock: prefill.minimum_stock ?? 0,
-        level_part: prefill.level_part || "Stock",
-        reff: prefill.reff || "", location: prefill.location || "",
-      });
-    } else {
-      setForm({ part_name: "", type: "", maker: "", line_area: "ASSEMBLING & FI", current_stock: "", minimum_stock: 0, level_part: "Stock", reff: "", location: "" });
-    }
-  }, [part, prefill, open]);
+useEffect(() => {
+  if (part) {
+    // IMPORTANT: never silently replace invalid legacy line_area. Preserve raw value
+    // so UI can warn the Creator instead of defaulting to PRESSING.
+    setForm({
+      reff: part.reff || "",
+      part_name: part.part_name || "",
+      type: part.type || "",
+      maker: part.maker || "",
+      uom: part.uom || "",
+      line_area: part.line_area || "",
+      current_stock: part.current_stock ?? "",
+      minimum_stock: part.minimum_stock ?? 0,
+      location: part.location || "",
+      maximum_stock: part.maximum_stock ?? 0,
+    });
+  } else if (prefill) {
+    setForm({
+      reff: prefill.reff || "",
+      part_name: prefill.part_name || "",
+      type: prefill.type || "",
+      maker: prefill.maker || "",
+      uom: prefill.uom || "",
+      line_area: prefill.line_area || "ASSEMBLING & FI",
+      current_stock: prefill.current_stock ?? "",
+      minimum_stock: prefill.minimum_stock ?? 0,
+      location: prefill.location || "",
+      maximum_stock: prefill.maximum_stock ?? 0,
+    });
+  } else {
+    setForm({
+      reff: "",
+      part_name: "",
+      type: "",
+      maker: "",
+      uom: "",
+      line_area: "ASSEMBLING & FI",
+      current_stock: "",
+      minimum_stock: 0,
+      location: "",
+      maximum_stock: 0,
+    });
+  }
+}, [part, prefill, open]);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const lineInvalid = form.line_area && !VALID_LINE_KEYS.includes(form.line_area);
@@ -479,35 +521,102 @@ function EditDialog({ open, onClose, part, prefill, onSaved }) {
       <DialogContent className="sm:max-w-xl" data-testid="master-edit-dialog">
         <DialogHeader><DialogTitle>{isEdit ? "Edit Master Part" : "Tambah Master Part"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Input label="Part Name *" value={form.part_name} onChange={(v) => upd("part_name", v)} testId="me-name" />
-          <Input label="Type" value={form.type} onChange={(v) => upd("type", v)} testId="me-type" />
-          <Input label="Maker" value={form.maker} onChange={(v) => upd("maker", v)} testId="me-maker" />
+          <Input
+            label="No. Reff"
+            value={form.reff}
+            onChange={(v) => upd("reff", v)}
+            testId="me-reff"
+          />
+          <Input
+            label="Part Name *"
+            value={form.part_name}
+            onChange={(v) => upd("part_name", v)}
+            testId="me-name"
+          />
+          <Input
+            label="Type"
+            value={form.type}
+            onChange={(v) => upd("type", v)}
+            testId="me-type"
+          />
+          <Input
+            label="Maker"
+            value={form.maker}
+            onChange={(v) => upd("maker", v)}
+            testId="me-maker"
+          />
+          <Input
+            label="UOM"
+            value={form.uom}
+            onChange={(v) => upd("uom", v)}
+            testId="me-uom"
+          />
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Line / Area *</label>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+              Line / Area *
+            </label>
             <select
               value={form.line_area}
               onChange={(e) => upd("line_area", e.target.value)}
               data-testid="me-line"
-              className={`w-full rounded-lg border px-3 py-2 text-sm bg-white ${lineInvalid ? "border-amber-400 bg-amber-50" : "border-slate-300"}`}
+              className={`w-full rounded-lg border px-3 py-2 text-sm bg-white ${
+                lineInvalid
+                ? "border-amber-400 bg-amber-50"
+                : "border-slate-300"
+              }`}
             >
-              {/* If current value is invalid, include it as a flagged option so it doesn't silently default */}
-              {lineInvalid && <option value={form.line_area}>⚠ {form.line_area} (invalid — pilih nilai valid)</option>}
-              {!form.line_area && <option value="">-- Pilih Line --</option>}
-              {LINE_AREAS.map((o) => <option key={o.key} value={o.key}>{o.key}</option>)}
+              {lineInvalid && (
+                <option value={form.line_area}>
+                  ⚠ {form.line_area} (invalid — pilih nilai valid)
+                </option>
+              )}
+
+              {!form.line_area && (
+                <option value="">-- Pilih Line --</option>
+              )}
+
+              {LINE_AREAS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.key}
+                </option>
+              ))}
             </select>
-            {lineInvalid && (
-              <div className="mt-1 text-xs text-amber-700 flex items-start gap-1" data-testid="me-line-invalid">
-                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                <span>Invalid Line/Area: <strong>&quot;{form.line_area}&quot;</strong>. Pilih salah satu Line/Area valid sebelum menyimpan.</span>
-              </div>
-            )}
-          </div>
-          <Input label="Current Stock (kosong = NEED UPDATE, 0 = NO STOCK)" type="number" value={form.current_stock} onChange={(v) => upd("current_stock", v)} testId="me-stock" />
-          <Input label="Minimum Stock" type="number" value={form.minimum_stock} onChange={(v) => upd("minimum_stock", v)} testId="me-min" />
-          <SelectField label="Level Part" value={form.level_part} onChange={(v) => upd("level_part", v)} options={LEVELS} testId="me-level" />
-          <Input label="Location" value={form.location} onChange={(v) => upd("location", v)} testId="me-location" />
-          <Input label="REFF" value={form.reff} onChange={(v) => upd("reff", v)} testId="me-reff" />
-        </div>
+
+              {lineInvalid && (
+                <div className="mt-1 text-xs text-amber-700">
+                  Invalid Line/Area: <strong>{form.line_area}</strong>.
+                  Pilih salah satu Line/Area valid sebelum menyimpan.
+                </div>
+              )}
+            </div>
+            <Input
+              label="Current Stock"
+              type="number"
+              value={form.current_stock}
+              onChange={(v) => upd("current_stock", v)}
+              testId="me-stock"
+            />
+            <Input
+              label="Minimum Stock"
+              type="number"
+              value={form.minimum_stock}
+              onChange={(v) => upd("minimum_stock", v)}
+              testId="me-min"
+            />
+            <Input
+              label="Location"
+              value={form.location}
+              onChange={(v) => upd("location", v)}
+              testId="me-location"
+            />
+            <Input
+              label="Maximum Stock"
+              type="number"
+              value={form.maximum_stock}
+              onChange={(v) => upd("maximum_stock", v)}
+              testId="me-max"
+            />        
+            </div>
         <DialogFooter>
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm">Batal</button>
           <button onClick={save} disabled={busy} className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold" data-testid="me-save">{busy ? "..." : "Simpan"}</button>

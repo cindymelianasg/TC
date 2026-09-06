@@ -1,9 +1,7 @@
 from dotenv import load_dotenv
 from pathlib import Path
-
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
-
 import os
 import uuid
 import logging
@@ -12,37 +10,30 @@ import jwt
 import requests
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any
-
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Query, Response, Header
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict
-
 # -------------------------------------------------------------------
 # Setup & Constants
 # -------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
-
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 12
-
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 APP_NAME = os.environ.get('APP_NAME', 'spare-part-control')
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 DEFAULT_PASSWORD = os.environ.get('DEFAULT_PASSWORD', '123456')
 CREATOR_NIK = os.environ.get('CREATOR_NIK', '32521')
-
 LINE_AREAS = ["PRESSING", "WELDING", "PAINTING", "INJECTION", "SEAT", "ASSEMBLING & FI"]
 VALID_LINE_AREAS = set(LINE_AREAS)
 RANK_OPTIONS = ["SEC.HEAD", "SUPERVISOR", "SENIOR FOREMAN", "FOREMAN", "PELAKSANA"]
-
 # ---- Suzuki Location Code Parser (SOP: OPL PENOMORAN RAK GUDANG) ----
 # Format: [XX Gudang][XX Rak][XX Tingkat][L|R Sisi][XX Urutan]  → 9 chars
 LOCATION_SECTION_MAP = {
@@ -54,7 +45,6 @@ LOCATION_SECTION_MAP = {
     "60": "Seat",
 }
 LOCATION_SIDE_MAP = {"L": "Posisi Kiri (Left)", "R": "Posisi Kanan (Right)"}
-
 def parse_location_code(code: Optional[str]) -> Dict[str, Any]:
     """Decode Suzuki 9-char location code into structured fields."""
     if not code:
@@ -76,14 +66,12 @@ def parse_location_code(code: Optional[str]) -> Dict[str, Any]:
         "sisi": {"code": sisi, "label": LOCATION_SIDE_MAP.get(sisi, sisi)},
         "urutan": {"code": urutan, "label": f"Barisan No. {int(urutan)}" if urutan.isdigit() else urutan},
     }
-
 def normalize_line(line: Optional[str]) -> Optional[str]:
     """Normalise for query filtering only. Does NOT silently migrate legacy values.
     Use validate_line_area() for write operations to reject invalid values."""
     if not line:
         return line
     return line.upper().strip()
-
 def validate_line_area(line: Optional[str]) -> str:
     """Strict validation for create/update/import. Raises 422 if invalid."""
     if not line:
@@ -92,7 +80,6 @@ def validate_line_area(line: Optional[str]) -> str:
     if u not in VALID_LINE_AREAS:
         raise HTTPException(422, f"Line/Area '{line}' tidak valid. Pilih salah satu: {', '.join(LINE_AREAS)}")
     return u
-
 INITIAL_USERS = [
     {"name": "ZULKIFLI", "email": "zulkifli@suzuki.co.id", "nik": "6282", "rank": "SEC.HEAD", "area": "TC BODY"},
     {"name": "HERI IRAWAN", "email": "heri.irawan@suzuki.co.id", "nik": "19376", "rank": "SUPERVISOR", "area": "TC BODY"},
@@ -110,24 +97,19 @@ INITIAL_USERS = [
     {"name": "FAHREZA ALDRYAN MAULANA", "email": "fahreza.aldryan@suzuki.co.id", "nik": "32522", "rank": "PELAKSANA", "area": "INJECTION"},
     {"name": "SUGIYANTO", "email": "sugiyanto@suzuki.co.id", "nik": "19561", "rank": "PELAKSANA", "area": "ADMIN TC BODY"},
 ]
-
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
 TRACKED_EDIT_FIELDS = {"qty_order", "level_part", "lampiran_status", "lampiran_date"}
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
     except Exception:
         return False
-
 def create_access_token(user_id: str, nik: str, role: str) -> str:
     payload = {
         "sub": user_id, "nik": nik, "role": role,
@@ -135,7 +117,6 @@ def create_access_token(user_id: str, nik: str, role: str) -> str:
         "type": "access",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
 def strip_user(u: dict) -> dict:
     if not u:
         return u
@@ -143,7 +124,6 @@ def strip_user(u: dict) -> dict:
     u.pop("_id", None)
     u.pop("password_hash", None)
     return u
-
 def compute_status(part: dict) -> str:
     if part.get("datang_date") and part.get("datang_no"):
         return "DATANG"
@@ -156,7 +136,6 @@ def compute_status(part: dict) -> str:
     if part.get("penawaran_date"):
         return "PENAWARAN"
     return "REQUEST"
-
 def part_with_status(part: dict) -> dict:
     if not part:
         return part
@@ -164,12 +143,10 @@ def part_with_status(part: dict) -> dict:
     part.pop("_id", None)
     part["status"] = compute_status(part)
     return part
-
 # -------------------------------------------------------------------
 # Storage (Emergent Managed Object Storage)
 # -------------------------------------------------------------------
 storage_key: Optional[str] = None
-
 def init_storage() -> Optional[str]:
     global storage_key
     if storage_key:
@@ -186,7 +163,6 @@ def init_storage() -> Optional[str]:
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
         return None
-
 def put_object(path: str, data: bytes, content_type: str) -> dict:
     key = init_storage()
     if not key:
@@ -208,7 +184,6 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
         )
     resp.raise_for_status()
     return resp.json()
-
 def get_object(path: str):
     key = init_storage()
     if not key:
@@ -229,43 +204,36 @@ def get_object(path: str):
         raise HTTPException(status_code=404, detail="File not found")
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
-
 MIME_BY_EXT = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
     "gif": "image/gif", "webp": "image/webp", "pdf": "application/pdf",
 }
-
 # -------------------------------------------------------------------
 # Models
 # -------------------------------------------------------------------
 class LoginRequest(BaseModel):
     nik: str
     password: str
-
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
-
 class UserCreate(BaseModel):
     name: str
     email: str
     nik: str
     rank: str
     area: str
-
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     nik: Optional[str] = None
     rank: Optional[str] = None
     area: Optional[str] = None
-
 class FileRef(BaseModel):
     id: str
     path: str
     filename: str
     content_type: str
-
 class SparePartCreate(BaseModel):
     line_area: str
     nama_barang: str
@@ -282,7 +250,6 @@ class SparePartCreate(BaseModel):
     foto_part: List[FileRef] = []
     ttd_requestor: Optional[FileRef] = None
     ttd_approval: Optional[FileRef] = None
-
 class SparePartEdit(BaseModel):
     line_area: Optional[str] = None
     nama_barang: Optional[str] = None
@@ -299,38 +266,31 @@ class SparePartEdit(BaseModel):
     foto_part: Optional[List[FileRef]] = None
     ttd_requestor: Optional[FileRef] = None
     ttd_approval: Optional[FileRef] = None
-
 class PenawaranUpdate(BaseModel):
     penawaran_date: Optional[str] = None
     penawaran_note: Optional[str] = ""
     nego_date: Optional[str] = None
     nego_note: Optional[str] = ""
-
 class AFAUpdate(BaseModel):
     afa_date: Optional[str] = None
     afa_no: Optional[str] = ""
     afa_note: Optional[str] = ""
-
 class POUpdate(BaseModel):
     po_date: Optional[str] = None
     po_no: Optional[str] = ""
     po_note: Optional[str] = ""
-
 class DatangUpdate(BaseModel):
     datang_date: Optional[str] = None
     datang_no: Optional[str] = ""
     datang_note: Optional[str] = ""
     foto_datang: List[FileRef] = []
-
 class StampUpdate(BaseModel):
     stamp_file: Optional[FileRef] = None
-
 # -------------------------------------------------------------------
 # FastAPI App & Auth
 # -------------------------------------------------------------------
 app = FastAPI(title="SMART-TC — Sparepart Monitoring and Request Tracking")
 api_router = APIRouter(prefix="/api")
-
 async def get_current_user(request: Request) -> dict:
     token = None
     auth_header = request.headers.get("Authorization", "")
@@ -352,11 +312,9 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
 def require_creator(user: dict):
     if user.get("role") != "creator":
         raise HTTPException(status_code=403, detail="Only Creator can perform this action")
-
 # -------------------------------------------------------------------
 # Startup
 # -------------------------------------------------------------------
@@ -377,10 +335,8 @@ async def startup():
     await db.movements.create_index([("master_part_id", 1), ("date", -1)])
     await db.movements.create_index([("line_area", 1), ("type", 1), ("date", -1)])
     await db.files.create_index("path", unique=True)
-
     # Init storage
     init_storage()
-
     # Seed users
     existing = await db.users.count_documents({})
     if existing == 0:
@@ -400,7 +356,6 @@ async def startup():
             }
             await db.users.insert_one(doc)
         logger.info(f"Seeded {len(INITIAL_USERS)} initial users")
-
     # One-time backfill for parts missing new fields
     await db.spare_parts.update_many(
         {"status": {"$exists": False}},
@@ -423,7 +378,6 @@ async def startup():
         expected = compute_status(doc)
         if doc.get("status") != expected:
             await db.spare_parts.update_one({"id": doc["id"]}, {"$set": {"status": expected}})
-
 # -------------------------------------------------------------------
 # Auth Endpoints
 # -------------------------------------------------------------------
@@ -434,11 +388,9 @@ async def login(payload: LoginRequest):
         raise HTTPException(status_code=401, detail="NIK atau password salah")
     token = create_access_token(user["id"], user["nik"], user["role"])
     return {"access_token": token, "token_type": "bearer", "user": strip_user(user)}
-
 @api_router.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return user
-
 @api_router.post("/auth/change-password")
 async def change_password(payload: ChangePasswordRequest, user=Depends(get_current_user)):
     db_user = await db.users.find_one({"id": user["id"]})
@@ -451,11 +403,9 @@ async def change_password(payload: ChangePasswordRequest, user=Depends(get_curre
         {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}}
     )
     return {"ok": True}
-
 @api_router.post("/auth/logout")
 async def logout():
     return {"ok": True}
-
 # -------------------------------------------------------------------
 # User Management Endpoints
 # -------------------------------------------------------------------
@@ -464,7 +414,6 @@ async def list_users(user=Depends(get_current_user)):
     users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
     users.sort(key=lambda x: x.get("nik", ""))
     return users
-
 @api_router.post("/users")
 async def create_user(payload: UserCreate, user=Depends(get_current_user)):
     require_creator(user)
@@ -485,7 +434,6 @@ async def create_user(payload: UserCreate, user=Depends(get_current_user)):
     }
     await db.users.insert_one(doc)
     return strip_user(doc)
-
 @api_router.put("/users/{user_id}")
 async def update_user(user_id: str, payload: UserUpdate, user=Depends(get_current_user)):
     require_creator(user)
@@ -500,7 +448,6 @@ async def update_user(user_id: str, payload: UserUpdate, user=Depends(get_curren
     await db.users.update_one({"id": user_id}, {"$set": update_data})
     updated = await db.users.find_one({"id": user_id})
     return strip_user(updated)
-
 @api_router.delete("/users/{user_id}")
 async def delete_user(user_id: str, user=Depends(get_current_user)):
     require_creator(user)
@@ -513,7 +460,6 @@ async def delete_user(user_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Tidak bisa menghapus Creator")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
-
 @api_router.post("/users/{user_id}/reset-password")
 async def reset_user_password(user_id: str, user=Depends(get_current_user)):
     require_creator(user)
@@ -525,7 +471,6 @@ async def reset_user_password(user_id: str, user=Depends(get_current_user)):
         {"$set": {"password_hash": hash_password(DEFAULT_PASSWORD), "must_change_password": True}}
     )
     return {"ok": True, "default_password": DEFAULT_PASSWORD}
-
 # -------------------------------------------------------------------
 # File Upload / Download
 # -------------------------------------------------------------------
@@ -552,7 +497,6 @@ async def upload_file(file: UploadFile = File(...), user=Depends(get_current_use
     }
     await db.files.insert_one(doc)
     return {"id": file_id, "path": result["path"], "filename": filename, "content_type": content_type}
-
 @api_router.get("/files/{file_id}")
 async def get_file(file_id: str, auth: Optional[str] = Query(None), authorization: Optional[str] = Header(None)):
     # accept token via header or query (img tags can't send headers)
@@ -574,7 +518,6 @@ async def get_file(file_id: str, auth: Optional[str] = Query(None), authorizatio
         raise HTTPException(status_code=404, detail="File not found")
     data, ct = get_object(record["path"])
     return Response(content=data, media_type=record.get("content_type") or ct)
-
 # -------------------------------------------------------------------
 # Spare Parts Endpoints
 # -------------------------------------------------------------------
@@ -613,7 +556,6 @@ async def list_spare_parts(
             {"po_no": {"$regex": q, "$options": "i"}},
             {"datang_no": {"$regex": q, "$options": "i"}},
         ]
-
     total = await db.spare_parts.count_documents(query)
     skip = max(0, (page - 1) * page_size)
     cursor = (
@@ -625,14 +567,12 @@ async def list_spare_parts(
     items = await cursor.to_list(page_size)
     enriched = [part_with_status(p) for p in items]
     return {"items": enriched, "total": total, "page": page, "page_size": page_size}
-
 @api_router.get("/spare-parts/{part_id}")
 async def get_spare_part(part_id: str, user=Depends(get_current_user)):
     part = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     if not part:
         raise HTTPException(status_code=404, detail="Part tidak ditemukan")
     return part_with_status(part)
-
 @api_router.post("/spare-parts")
 async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_user)):
     # Validate level_part enum
@@ -641,7 +581,6 @@ async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_u
         raise HTTPException(status_code=422, detail="Level Part harus salah satu: Critical, Substitusi, Stock")
     if payload.lampiran_status and payload.lampiran_status not in {"BELUM", "DONE"}:
         raise HTTPException(status_code=422, detail="Lampiran status harus BELUM atau DONE")
-
     part_id = str(uuid.uuid4())
     doc = payload.model_dump()
     doc["line_area"] = doc["line_area"].upper()
@@ -680,7 +619,6 @@ async def create_spare_part(payload: SparePartCreate, user=Depends(get_current_u
     doc["edit_history"] = []
     await db.spare_parts.insert_one(doc)
     return part_with_status(doc)
-
 @api_router.patch("/spare-parts/{part_id}")
 async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get_current_user)):
     """Edit basic part fields. Permission: creator OR original requestor."""
@@ -691,7 +629,6 @@ async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get
     is_requestor = part.get("requestor_id") == user["id"]
     if not (is_creator or is_requestor):
         raise HTTPException(status_code=403, detail="Hanya creator atau requestor asli yang dapat mengedit request ini")
-
     update_data = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if "level_part" in update_data and update_data["level_part"] not in {"Critical", "Substitusi", "Stock"}:
         raise HTTPException(status_code=422, detail="Level Part tidak valid")
@@ -704,7 +641,6 @@ async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get
         update_data["lampiran_date"] = None
     if not update_data:
         return part_with_status({**part})
-
     # Track changed fields (only display-tracked subset goes into edit_history)
     changes = []
     for k, v in update_data.items():
@@ -713,7 +649,6 @@ async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get
         old_val = part.get(k)
         if old_val != v:
             changes.append({"field": k, "old": old_val, "new": v})
-
     update_data["updated_at"] = now_iso()
     update_data["updated_by"] = {"name": user["name"], "nik": user["nik"], "action": "Edit Info"}
     ops = {"$set": update_data}
@@ -728,7 +663,6 @@ async def edit_spare_part(part_id: str, payload: SparePartEdit, user=Depends(get
     await db.spare_parts.update_one({"id": part_id}, ops)
     updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     return part_with_status(updated)
-
 async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
     part = await db.spare_parts.find_one({"id": part_id})
     if not part:
@@ -752,22 +686,18 @@ async def _update_stage(part_id: str, stage: str, fields: dict, user: dict):
     )
     updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     return part_with_status(updated)
-
 @api_router.patch("/spare-parts/{part_id}/penawaran")
 async def update_penawaran(part_id: str, payload: PenawaranUpdate, user=Depends(get_current_user)):
     data = payload.model_dump(exclude_unset=True)
     return await _update_stage(part_id, "PENAWARAN", data, user)
-
 @api_router.patch("/spare-parts/{part_id}/afa")
 async def update_afa(part_id: str, payload: AFAUpdate, user=Depends(get_current_user)):
     data = payload.model_dump(exclude_unset=True)
     return await _update_stage(part_id, "AFA", data, user)
-
 @api_router.patch("/spare-parts/{part_id}/po")
 async def update_po(part_id: str, payload: POUpdate, user=Depends(get_current_user)):
     data = payload.model_dump(exclude_unset=True)
     return await _update_stage(part_id, "PO", data, user)
-
 @api_router.patch("/spare-parts/{part_id}/datang")
 async def update_datang(part_id: str, payload: DatangUpdate, user=Depends(get_current_user)):
     data = payload.model_dump(exclude_unset=True)
@@ -780,7 +710,6 @@ async def update_datang(part_id: str, payload: DatangUpdate, user=Depends(get_cu
             refreshed = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
             return part_with_status(refreshed)
     return updated
-
 @api_router.patch("/spare-parts/{part_id}/stamp")
 async def update_stamp(part_id: str, payload: StampUpdate, user=Depends(get_current_user)):
     part = await db.spare_parts.find_one({"id": part_id})
@@ -792,7 +721,6 @@ async def update_stamp(part_id: str, payload: StampUpdate, user=Depends(get_curr
     )
     updated = await db.spare_parts.find_one({"id": part_id}, {"_id": 0})
     return part_with_status(updated)
-
 @api_router.get("/spare-parts/{part_id}/stock-impact")
 async def get_stock_impact(part_id: str, user=Depends(get_current_user)):
     """Check whether this request already triggered an IN movement (affecting stock)."""
@@ -811,7 +739,6 @@ async def get_stock_impact(part_id: str, user=Depends(get_current_user)):
         "master_part_name": (master or {}).get("part_name"),
         "master_current_stock": (master or {}).get("current_stock"),
     }
-
 @api_router.delete("/spare-parts/{part_id}")
 async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
     """Allowed for creator OR original requestor.
@@ -824,7 +751,6 @@ async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
     is_requestor = part.get("requestor_id") == user["id"]
     if not (is_creator or is_requestor):
         raise HTTPException(status_code=403, detail="Hanya creator atau requestor asli yang dapat menghapus request ini")
-
     # Reverse IN if exists
     in_mv = await db.movements.find_one({"spare_part_id": part_id, "type": "IN"})
     if in_mv:
@@ -855,10 +781,8 @@ async def delete_spare_part(part_id: str, user=Depends(get_current_user)):
                     "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"Reverse OUT -{qty} (delete request)"},
                 }},
             )
-
     await db.spare_parts.delete_one({"id": part_id})
     return {"ok": True, "reverse_applied": bool(in_mv)}
-
 # -------------------------------------------------------------------
 # Dashboard & Reports
 # -------------------------------------------------------------------
@@ -874,11 +798,9 @@ async def dashboard_summary(line: Optional[str] = None, month: Optional[int] = N
     if not year: year = now.year
     m = f"{int(month):02d}"
     ym = f"{int(year)}-{m}"
-
     line_filter: Dict[str, Any] = {}
     if line and line.upper() not in ("PLANT", "SEMUA"):
         line_filter["line_area"] = normalize_line(line)
-
     # Procurement counts by month (based on order_tanggal)
     part_query: Dict[str, Any] = {**line_filter, "order_tanggal": {"$regex": f"^{ym}"}}
     parts = await db.spare_parts.find(part_query, {"_id": 0}).sort("order_tanggal", -1).to_list(100000)
@@ -887,14 +809,12 @@ async def dashboard_summary(line: Optional[str] = None, month: Optional[int] = N
     afa_reached = sum(1 for p in enriched if p.get("afa_no") or p.get("afa_date"))
     po_reached = sum(1 for p in enriched if p.get("po_no") or p.get("po_date"))
     datang_reached = sum(1 for p in enriched if p.get("datang_no") or p.get("datang_date"))
-
     # Movements this month (based on movement.date). Uses master_part.line_area for filtering.
     mv_query: Dict[str, Any] = {"date": {"$regex": f"^{ym}"}, **line_filter}
     in_mvs = await db.movements.find({**mv_query, "type": "IN"}, {"_id": 0}).to_list(100000)
     out_mvs = await db.movements.find({**mv_query, "type": "OUT"}, {"_id": 0}).to_list(100000)
     in_qty = sum(int(mv.get("quantity") or 0) for mv in in_mvs)
     out_qty = sum(int(mv.get("quantity") or 0) for mv in out_mvs)
-
     return {
         "line": line or "PLANT", "month": month, "year": year,
         "procurement": {
@@ -921,7 +841,6 @@ async def dashboard_summary(line: Optional[str] = None, month: Optional[int] = N
             "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
         },
     }
-
 @api_router.get("/dashboard/drilldown/{card}")
 async def dashboard_drilldown(card: str, line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
     """Return list of items for a Dashboard card. card ∈ {total_request, afa, po, arrival, out, remaining, waiting_po, waiting_arrival}."""
@@ -933,13 +852,11 @@ async def dashboard_drilldown(card: str, line: Optional[str] = None, month: Opti
     line_filter: Dict[str, Any] = {}
     if line and line.upper() not in ("PLANT", "SEMUA"):
         line_filter["line_area"] = normalize_line(line)
-
     if card in ("arrival", "out"):
         mv_query: Dict[str, Any] = {"date": {"$regex": f"^{ym}"}, **line_filter,
                                     "type": "IN" if card == "arrival" else "OUT"}
         items = await db.movements.find(mv_query, {"_id": 0}).sort("date", -1).limit(500).to_list(500)
         return {"card": card, "count": len(items), "items": items}
-
     part_query: Dict[str, Any] = {**line_filter, "order_tanggal": {"$regex": f"^{ym}"}}
     if card == "afa":
         part_query["$or"] = [{"afa_no": {"$exists": True, "$ne": None}}, {"afa_date": {"$exists": True, "$ne": None}}]
@@ -964,7 +881,6 @@ async def dashboard_drilldown(card: str, line: Optional[str] = None, month: Opti
         ]
     items = await db.spare_parts.find(part_query, {"_id": 0}).sort("order_tanggal", -1).limit(500).to_list(500)
     return {"card": card, "count": len(items), "items": [part_with_status(p) for p in items]}
-
 @api_router.get("/dashboard/{line}")
 async def dashboard_line(line: str, month: int = None, year: int = None, user=Depends(get_current_user)):
     line_up = line.upper().replace("-", " ")
@@ -987,7 +903,6 @@ async def dashboard_line(line: str, month: int = None, year: int = None, user=De
         "datang": sum(1 for p in enriched if p["status"] == "DATANG"),
     }
     return {"line": line_up, "month": month, "year": year, "summary": summary, "items": enriched}
-
 @api_router.get("/reports/monthly")
 async def monthly_report(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
     now = datetime.now(timezone.utc)
@@ -1018,7 +933,6 @@ async def monthly_report(line: Optional[str] = None, month: Optional[int] = None
         "by_line": by_line,
         "items": enriched,
     }
-
 @api_router.get("/meta/options")
 async def meta_options(user=Depends(get_current_user)):
     return {
@@ -1026,12 +940,10 @@ async def meta_options(user=Depends(get_current_user)):
         "ranks": RANK_OPTIONS,
         "statuses": ["REQUEST", "PENAWARAN", "NEGO", "AFA PROCESS", "PO PROCESS", "DATANG"],
     }
-
 # -------------------------------------------------------------------
 # Master Data & Movements helpers
 # -------------------------------------------------------------------
 LEVEL_OPTIONS = {"Critical", "Substitusi", "Stock"}
-
 async def _try_auto_in(part: dict, user: dict):
     """Look up master part by (name+type+maker+line_area). Skip with warning if missing (option 3b)."""
     master = await db.master_parts.find_one({
@@ -1070,44 +982,21 @@ async def _try_auto_in(part: dict, user: dict):
         {"$set": {"current_stock": new_stock, "updated_at": now_iso(), "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"Auto-IN +{qty}"}}},
     )
     return {"created": True, "master_part_id": master["id"], "new_stock": new_stock, "qty": qty}
-
 def compute_stock_status(p: dict) -> str:
     cs = p.get("current_stock")
     if cs is None:
-        return "NEED UPDATE"
-    if cs <= 0:
-        return "NO STOCK"
-    if cs < 2:
-        return "LOW STOCK"
-    return "AMAN"
-
+        return "ZERO"
+    if cs == 0:
+        return "ZERO"
+    if cs <= 2:
+        return "MIN"
+    return "GOOD"
 def compute_action(p: dict) -> str:
-    """Action label per spec: AMAN / LOW STOCK / ORDER SEKARANG!!! / CHECK SUBSTITUTE / MONITOR / NEED UPDATE."""
-    cs = p.get("current_stock")
-    lvl = p.get("level_part") or "Stock"
-    if cs is None:
-        return "NEED UPDATE"
-    if cs <= 0:
-        if lvl == "Critical":
-            return "ORDER SEKARANG!!!"
-        if lvl == "Substitusi":
-            return "CHECK SUBSTITUTE"
-        return "MONITOR"
-    if cs < 2:
-        return "LOW STOCK"
-    return "AMAN"
-
+    """Returns the same 3-condition label as stock status: GOOD / MIN / ZERO."""
+    return compute_stock_status(p)
 def compute_warning(p: dict):
-    """Backwards-compat warning used by old endpoints."""
-    a = compute_action(p)
-    if a == "ORDER SEKARANG!!!":
-        return "CRITICAL"
-    if a == "CHECK SUBSTITUTE":
-        return "CHECK_SUBSTITUTE"
-    if a in ("LOW STOCK", "MONITOR"):
-        return "BELOW_MIN"
+    """No legacy warning labels; Part Condition uses only GOOD / MIN / ZERO."""
     return None
-
 def master_with_status(m: dict) -> dict:
     if not m:
         return m
@@ -1117,7 +1006,6 @@ def master_with_status(m: dict) -> dict:
     m["action"] = compute_action(m)
     m["warning"] = compute_warning(m)
     return m
-
 # -------------------------------------------------------------------
 # Master Data & Movements models
 # -------------------------------------------------------------------
@@ -1125,28 +1013,29 @@ class MasterPartCreate(BaseModel):
     part_name: str
     type: str = ""
     maker: str = ""
+    uom: Optional[str] = ""
     line_area: str
     current_stock: Optional[int] = None
     minimum_stock: Optional[int] = 0
+    maximum_stock: Optional[int] = 0
     level_part: str = "Stock"
-    reff: Optional[str] = ""
+    reff: Optional[str] = None
     location: Optional[str] = ""
-
 class MasterPartEdit(BaseModel):
     part_name: Optional[str] = None
     type: Optional[str] = None
     maker: Optional[str] = None
+    uom: Optional[str] = None
     line_area: Optional[str] = None
     current_stock: Optional[int] = None
     minimum_stock: Optional[int] = None
+    maximum_stock: Optional[int] = None
     level_part: Optional[str] = None
     reff: Optional[str] = None
     location: Optional[str] = None
-
 class ImportPreviewRequest(BaseModel):
     line_area: str
     rows: List[Dict[str, Any]]
-
 class ImportSaveRequest(BaseModel):
     line_area: str
     rows: List[Dict[str, Any]]
@@ -1155,13 +1044,11 @@ class ImportSaveRequest(BaseModel):
     # Optional: seed month for creating initial IN/OUT movement records.
     # Format YYYY-MM. If omitted, uses current month.
     seed_month: Optional[str] = None
-
 class MovementOutCreate(BaseModel):
     master_part_id: str
     date: str
     quantity: int
     note: Optional[str] = ""
-
 # -------------------------------------------------------------------
 # Master Data & Movements endpoints
 # -------------------------------------------------------------------
@@ -1171,39 +1058,132 @@ async def list_master_parts(
     level_part: Optional[str] = None,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    reff: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     user=Depends(get_current_user),
 ):
-    query: Dict[str, Any] = {}
-    if line and line.upper() != "SEMUA":
-        query["line_area"] = line.upper()
-    if level_part and level_part != "SEMUA":
-        query["level_part"] = level_part
-    if q:
-        query["$or"] = [
-            {"part_name": {"$regex": q, "$options": "i"}},
-            {"type": {"$regex": q, "$options": "i"}},
-            {"maker": {"$regex": q, "$options": "i"}},
-            {"reff": {"$regex": q, "$options": "i"}},
-            {"location": {"$regex": q, "$options": "i"}},
-        ]
-    total = await db.master_parts.count_documents(query)
-    skip = max(0, (page - 1) * page_size)
-    cursor = db.master_parts.find(query, {"_id": 0}).sort("part_name", 1).skip(skip).limit(page_size)
-    items = await cursor.to_list(page_size)
-    enriched = [master_with_status(m) for m in items]
-    if status and status != "SEMUA":
-        enriched = [m for m in enriched if m["stock_status"] == status]
-    return {"items": enriched, "total": total, "page": page, "page_size": page_size}
+    conditions = []
 
+    # ---------------------------------------------------------
+    # LINE / AREA
+    # ---------------------------------------------------------
+    if line and line.upper() != "SEMUA":
+        conditions.append({
+            "line_area": line.upper()
+        })
+
+    # ---------------------------------------------------------
+    # LEVEL PART
+    # ---------------------------------------------------------
+    if level_part and level_part != "SEMUA":
+        conditions.append({
+            "level_part": level_part
+        })
+
+    # ---------------------------------------------------------
+    # STOCK STATUS
+    # ---------------------------------------------------------
+    if status and status.upper() != "SEMUA":
+        status = status.upper()
+
+        if status == "GOOD":
+            # current_stock > 2
+            conditions.append({
+                "current_stock": {"$gt": 2}
+            })
+
+        elif status == "MIN":
+            # current_stock 1 atau 2
+            conditions.append({
+                "current_stock": {"$in": [1, 2]}
+            })
+
+        elif status == "ZERO":
+            # current_stock = 0, null, atau field tidak ada
+            conditions.append({
+                "$or": [
+                    {"current_stock": 0},
+                    {"current_stock": None},
+                    {"current_stock": {"$exists": False}},
+                ]
+            })
+
+    # ---------------------------------------------------------
+    # SEARCH
+    # ---------------------------------------------------------
+    if q:
+        conditions.append({
+            "$or": [
+                {"part_name": {"$regex": q, "$options": "i"}},
+                {"type": {"$regex": q, "$options": "i"}},
+                {"maker": {"$regex": q, "$options": "i"}},
+                {"reff": {"$regex": q, "$options": "i"}},
+                {"location": {"$regex": q, "$options": "i"}},
+            ]
+        })
+
+    # ---------------------------------------------------------
+    # NO REFF
+    # ---------------------------------------------------------
+    if reff:
+        conditions.append({
+            "reff": {"$regex": reff, "$options": "i"}
+        })
+
+    # ---------------------------------------------------------
+    # BUILD QUERY
+    # ---------------------------------------------------------
+    if len(conditions) == 0:
+        query = {}
+    elif len(conditions) == 1:
+        query = conditions[0]
+    else:
+        query = {
+            "$and": conditions
+        }
+
+    # ---------------------------------------------------------
+    # TOTAL AFTER ALL FILTERS
+    # ---------------------------------------------------------
+    total = await db.master_parts.count_documents(query)
+
+    # ---------------------------------------------------------
+    # PAGINATION
+    # ---------------------------------------------------------
+    page = max(1, page)
+    page_size = max(1, page_size)
+
+    skip = (page - 1) * page_size
+
+    cursor = (
+        db.master_parts
+        .find(query, {"_id": 0})
+        .sort("part_name", 1)
+        .skip(skip)
+        .limit(page_size)
+    )
+
+    items = await cursor.to_list(page_size)
+
+    # Add calculated stock status
+    enriched = [
+        master_with_status(m)
+        for m in items
+    ]
+
+    return {
+        "items": enriched,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 @api_router.get("/master-parts/{mid}")
 async def get_master_part(mid: str, user=Depends(get_current_user)):
     m = await db.master_parts.find_one({"id": mid}, {"_id": 0})
     if not m:
         raise HTTPException(404, "Master part tidak ditemukan")
     return master_with_status(m)
-
 @api_router.get("/master-parts-search/lookup")
 async def master_lookup(
     q: Optional[str] = None,
@@ -1234,17 +1214,14 @@ async def master_lookup(
             {"type": {"$regex": q, "$options": "i"}},
             {"maker": {"$regex": q, "$options": "i"}},
         ]
-
     if field in ("part_name", "type", "maker"):
         values = await db.master_parts.distinct(field, base)
         values = [v for v in values if v]
         values.sort(key=lambda x: str(x).lower())
         return {"values": values[:limit]}
-
     cursor = db.master_parts.find(base, {"_id": 0}).sort("part_name", 1).limit(limit)
     items = await cursor.to_list(limit)
     return {"items": [master_with_status(m) for m in items]}
-
 @api_router.post("/master-parts")
 async def create_master_part(payload: MasterPartCreate, user=Depends(get_current_user)):
     require_creator(user)
@@ -1265,7 +1242,6 @@ async def create_master_part(payload: MasterPartCreate, user=Depends(get_current
     doc["edit_history"] = []
     await db.master_parts.insert_one(doc)
     return master_with_status(doc)
-
 @api_router.put("/master-parts/{mid}")
 async def edit_master_part(mid: str, payload: MasterPartEdit, user=Depends(get_current_user)):
     require_creator(user)
@@ -1291,7 +1267,6 @@ async def edit_master_part(mid: str, payload: MasterPartEdit, user=Depends(get_c
     await db.master_parts.update_one({"id": mid}, ops)
     updated = await db.master_parts.find_one({"id": mid}, {"_id": 0})
     return master_with_status(updated)
-
 @api_router.delete("/master-parts-admin/reset-all")
 async def reset_master_data(user=Depends(get_current_user)):
     """Creator-only: Wipe ALL master_parts + their movements. Used after structure changes."""
@@ -1299,7 +1274,6 @@ async def reset_master_data(user=Depends(get_current_user)):
     mp_res = await db.master_parts.delete_many({})
     mv_res = await db.movements.delete_many({})
     return {"ok": True, "deleted_master_parts": mp_res.deleted_count, "deleted_movements": mv_res.deleted_count}
-
 @api_router.delete("/master-parts-admin/reset-line/{line}")
 async def reset_master_data_line(line: str, user=Depends(get_current_user)):
     """Creator-only: Wipe master_parts + movements only for the specified line."""
@@ -1309,12 +1283,10 @@ async def reset_master_data_line(line: str, user=Depends(get_current_user)):
     mp_res = await db.master_parts.delete_many({"line_area": line_area})
     mv_res = await db.movements.delete_many({"master_part_id": {"$in": part_ids}})
     return {"ok": True, "line": line_area, "deleted_master_parts": mp_res.deleted_count, "deleted_movements": mv_res.deleted_count}
-
 @api_router.get("/master-parts-admin/parse-location")
 async def api_parse_location(code: str, user=Depends(get_current_user)):
     """Decode a Suzuki location code (e.g. '300105L05') into structured parts (SOP OPL PENOMORAN RAK GUDANG)."""
     return parse_location_code(code)
-
 @api_router.get("/master-parts-admin/invalid-lines")
 async def list_invalid_line_parts(user=Depends(get_current_user)):
     """Returns count + sample of master_parts whose line_area is not in VALID_LINE_AREAS.
@@ -1324,7 +1296,6 @@ async def list_invalid_line_parts(user=Depends(get_current_user)):
     ).limit(50).to_list(50)
     count = await db.master_parts.count_documents({"line_area": {"$nin": list(VALID_LINE_AREAS)}})
     return {"count": count, "samples": [master_with_status(m) for m in invalid], "valid_lines": LINE_AREAS}
-
 @api_router.delete("/master-parts/{mid}")
 async def delete_master_part(mid: str, user=Depends(get_current_user)):
     require_creator(user)
@@ -1333,12 +1304,10 @@ async def delete_master_part(mid: str, user=Depends(get_current_user)):
         raise HTTPException(404, "Tidak ditemukan")
     await db.movements.delete_many({"master_part_id": mid})
     return {"ok": True}
-
 @api_router.get("/master-parts/{mid}/movements")
 async def list_master_part_movements(mid: str, user=Depends(get_current_user)):
     mvs = await db.movements.find({"master_part_id": mid}, {"_id": 0}).sort("date", -1).to_list(1000)
     return mvs
-
 @api_router.post("/master-parts/import/preview")
 async def import_preview(payload: ImportPreviewRequest, user=Depends(get_current_user)):
     require_creator(user)
@@ -1362,7 +1331,6 @@ async def import_preview(payload: ImportPreviewRequest, user=Depends(get_current
     dup_count = sum(1 for r in out_rows if r["_status"] == "DUPLICATE")
     invalid_count = sum(1 for r in out_rows if r["_status"] == "INVALID")
     return {"rows": out_rows, "summary": {"total": len(out_rows), "new": new_count, "duplicate": dup_count, "invalid": invalid_count}}
-
 @api_router.post("/master-parts/import/save")
 async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)):
     require_creator(user)
@@ -1456,7 +1424,6 @@ async def import_save(payload: ImportSaveRequest, user=Depends(get_current_user)
         except Exception:
             skipped += 1
     return {"created": created, "updated": updated, "skipped": skipped, "invalid": invalid, "movements_created": movements_created, "seed_month": seed_month}
-
 def _to_int_or_zero(v) -> int:
     if v in (None, ""):
         return 0
@@ -1464,7 +1431,6 @@ def _to_int_or_zero(v) -> int:
         return max(0, int(float(v)))
     except Exception:
         return 0
-
 async def _seed_movement(master_part_id: str, line_area: str, mv_type: str, qty: int, date: str, user, note: str = ""):
     doc = {
         "id": str(uuid.uuid4()),
@@ -1482,7 +1448,6 @@ async def _seed_movement(master_part_id: str, line_area: str, mv_type: str, qty:
         "created_at": now_iso(),
     }
     await db.movements.insert_one(doc)
-
 @api_router.post("/movements/out")
 async def create_out(payload: MovementOutCreate, user=Depends(get_current_user)):
     master = await db.master_parts.find_one({"id": payload.master_part_id})
@@ -1512,7 +1477,6 @@ async def create_out(payload: MovementOutCreate, user=Depends(get_current_user))
         {"$set": {"current_stock": new_stock, "updated_at": now_iso(), "updated_by": {"name": user["name"], "nik": user["nik"], "action": f"OUT -{payload.quantity}"}}},
     )
     return {"movement": {k: v for k, v in mv.items() if k != "_id"}, "new_stock": new_stock}
-
 @api_router.get("/movements")
 async def list_movements(
     line: Optional[str] = None,
@@ -1536,14 +1500,13 @@ async def list_movements(
     skip = max(0, (page - 1) * page_size)
     items = await db.movements.find(query, {"_id": 0}).sort("date", -1).skip(skip).limit(page_size).to_list(page_size)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
-
 @api_router.get("/stock/summary")
 async def stock_summary(line: Optional[str] = None, user=Depends(get_current_user)):
-    """Categorises master parts into GOOD / MINIMUM / ZERO / CRITICAL buckets.
-    - GOOD: current_stock > minimum_stock
-    - MINIMUM: 0 < current_stock <= minimum_stock
+    """
+    Categorises master parts into GOOD / MIN / ZERO buckets.
+    - GOOD: current_stock > 2
+    - MIN: current_stock in [1, 2]
     - ZERO: current_stock == 0
-    - CRITICAL: level_part == 'Critical' AND current_stock == 0
     Also returns need_update (current_stock is None) for informational purposes.
     """
     query: Dict[str, Any] = {}
@@ -1551,36 +1514,31 @@ async def stock_summary(line: Optional[str] = None, user=Depends(get_current_use
         query["line_area"] = normalize_line(line)
     all_parts = await db.master_parts.find(query, {"_id": 0}).to_list(200000)
     total = len(all_parts)
-    good_list, minimum_list, zero_list, critical_list, need_update_list = [], [], [], [], []
+    good_list, minimum_list, zero_list, need_update_list = [], [], [], []
     for p in all_parts:
         cs = p.get("current_stock")
-        mn = p.get("minimum_stock") or 0
-        level = p.get("level_part") or "Stock"
         p_out = {**p, "location_parsed": parse_location_code(p.get("location"))}
         if cs is None:
-            need_update_list.append(p_out); continue
-        if cs == 0 and level == "Critical":
-            critical_list.append(p_out); continue
+            zero_list.append(p_out)
+            continue
         if cs == 0:
-            zero_list.append(p_out); continue
-        if cs <= mn:
-            minimum_list.append(p_out); continue
+            zero_list.append(p_out)
+            continue
+        if cs <= 2:
+            minimum_list.append(p_out)
+            continue
         good_list.append(p_out)
     return {
         "total": total,
         "good": len(good_list),
         "minimum": len(minimum_list),
         "zero": len(zero_list),
-        "critical": len(critical_list),
         "need_update": len(need_update_list),
-        # bounded lists for popup drilldown; full list available via /master-parts endpoint
         "good_list": good_list[:500],
         "minimum_list": minimum_list[:500],
         "zero_list": zero_list[:500],
-        "critical_list": critical_list[:500],
         "need_update_list": need_update_list[:500],
     }
-
 @api_router.get("/reports/movement-monthly")
 async def movement_monthly_report(line: Optional[str] = None, month: Optional[int] = None, year: Optional[int] = None, user=Depends(get_current_user)):
     now = datetime.now(timezone.utc)
@@ -1600,12 +1558,10 @@ async def movement_monthly_report(line: Optional[str] = None, month: Optional[in
         "in": {"count": len(in_items), "total_qty": sum(m["quantity"] for m in in_items), "items": in_items},
         "out": {"count": len(out_items), "total_qty": sum(m["quantity"] for m in out_items), "items": out_items},
     }
-
 # -------------------------------------------------------------------
 # Register router & middleware
 # -------------------------------------------------------------------
 app.include_router(api_router)
-
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -1613,7 +1569,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()

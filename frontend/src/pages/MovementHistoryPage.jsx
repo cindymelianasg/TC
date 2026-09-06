@@ -54,7 +54,7 @@ export default function MovementHistoryPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
         <ResumeCard
           title="IN — Masuk Stock"
-          icon={ArrowUpToLine}
+          icon={ArrowDownToLine}
           accent="emerald"
           count={report?.in?.count ?? 0}
           qty={report?.in?.total_qty ?? 0}
@@ -63,7 +63,7 @@ export default function MovementHistoryPage() {
         />
         <ResumeCard
           title="OUT — Keluar Stock"
-          icon={ArrowDownToLine}
+          icon={ArrowUpToLine}
           accent="red"
           count={report?.out?.count ?? 0}
           qty={report?.out?.total_qty ?? 0}
